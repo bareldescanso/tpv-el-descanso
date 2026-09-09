@@ -53,6 +53,11 @@ function catalogSnapshot() {
   return {
     generadoEn: Date.now(),
     club: config.club.name,
+    usuarios: config.users.map((u) => ({ id: u.id, nombre: u.name, pin: u.pin, activo: u.active !== false })),
+    ajustes: {
+      club: config.club.name, subtitulo: config.club.subtitle || '',
+      keepAwake: !!config.settings.keepAwake, vibrate: !!config.settings.vibrate
+    },
     categorias: cats.map((c) => ({ id: c.id, nombre: c.name, emoji: c.emoji || '', color: c.color, orden: c.order || 0 })),
     productos: config.products.slice().sort((a, b) => {
       const ca = cats.findIndex((c) => c.id === a.categoryId), cb = cats.findIndex((c) => c.id === b.categoryId);
@@ -117,6 +122,163 @@ async function syncTest(url, token) {
     if (e instanceof TypeError) throw new Error('No se pudo conectar con el script. Comprueba la conexión a internet y la URL.');
     throw e;
   } finally { clearTimeout(timer); }
+}
+
+/* ---------- Configuración de vuelta: hoja → app ---------- */
+
+/** Descarga lo que hay en las hojas de configuración (usuarios, categorías, catálogo y ajustes). */
+async function syncFetchConfig() {
+  const cfg = syncCfg();
+  if (!cfg.url) throw new Error('Activa y guarda primero la conexión con Google Sheets');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const url = `${cfg.url}${cfg.url.includes('?') ? '&' : '?'}token=${encodeURIComponent(cfg.token)}&accion=config`;
+    const r = await fetch(url, { redirect: 'follow', signal: ctrl.signal });
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch (e) { throw new Error('La URL no responde como el script del TPV. Revisa la publicación como aplicación web.'); }
+    if (!data.ok) throw new Error(data.error === 'token' ? 'Token incorrecto' : (data.error || 'Error en el script'));
+    if (!data.productos) throw new Error('El script de la hoja es una versión antigua: no sabe devolver la configuración. Vuelve a pegar Code.gs y a implementar la aplicación web.');
+    return data;
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('Tiempo de espera agotado');
+    if (e instanceof TypeError) throw new Error('No se pudo conectar con el script. Comprueba la conexión a internet y la URL.');
+    throw e;
+  } finally { clearTimeout(timer); }
+}
+
+/** Nombres comparables: sin espacios de sobra, sin mayúsculas y sin tildes. */
+const normName = (s) => String(s ?? '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+/**
+ * Unidades vendidas por producto en el turno abierto (0 si no hay turno).
+ * Misma fuente que buildClosingStockMoves, así que cuadra con los movimientos de inventario.
+ */
+function soldUnitsInOpenTurn() {
+  const out = {};
+  if (!turn) return out;
+  computeReport(turn, turn.tickets, {}).byProduct.forEach((row) => {
+    if (row.productId) out[row.productId] = row.units;
+  });
+  return out;
+}
+
+/*
+ * Existencias de un producto al importar.
+ *  - Sin la casilla marcada: se conservan las del dispositivo (las de la hoja casi siempre están
+ *    desfasadas, porque solo se suben al cerrar el turno o al tocar el catálogo).
+ *  - Con la casilla marcada: manda la hoja, pero restando lo vendido en el turno abierto. El stock
+ *    del dispositivo se descuenta en cada venta (applyStockDelta), así que va por delante de la
+ *    hoja exactamente en esas unidades y sin la resta se perderían.
+ * No se recorta a 0 a propósito: un stock negativo significa que se ha vendido más de lo contado,
+ * y stockLevel ya lo pinta como agotado.
+ */
+function stockFromSheet(p, prev, { includeStock, soldUnits }) {
+  if (!includeStock) return { stock: prev ? (prev.stock ?? null) : null, minStock: prev ? (prev.minStock ?? null) : null };
+  const minStock = p.minimo == null ? null : p.minimo;
+  if (p.stock == null) return { stock: null, minStock };
+  return { stock: p.stock - (soldUnits[p.id] || 0), minStock };
+}
+
+/*
+ * Convierte lo descargado de la hoja en configuración de la app. Función pura: no toca `config`,
+ * solo lo lee para conservar lo que la hoja no sabe (el color de los productos, el logo del club).
+ * Deja fuera a propósito `adminPin` y `sync`: un valor equivocado en la hoja dejaría el dispositivo
+ * sin acceso o incomunicado.
+ * Si algo no cuadra lanza un error con TODOS los problemas encontrados y no devuelve nada a medias:
+ * como la importación reemplaza por completo lo que hay, aplicarla a medias sería peor que no hacerla.
+ */
+function configFromSheet(payload, { includeStock = false, soldUnits = {} } = {}) {
+  const problems = [];
+  const sheetCats = (payload && payload.categorias) || [];
+  const sheetProds = (payload && payload.productos) || [];
+  const sheetUsers = (payload && payload.usuarios) || [];
+  const fila = (i) => i + 2; // la fila 1 de cada hoja es la cabecera
+
+  if (!sheetCats.length) problems.push('La hoja «Categorías» está vacía.');
+  if (!sheetProds.length) problems.push('La hoja «Catálogo» está vacía.');
+  // Las tres vacías casi siempre significa que la hoja aún no ha recibido nada.
+  if (!sheetCats.length && !sheetProds.length && !sheetUsers.length) {
+    problems.push('Parece que la hoja todavía está sin rellenar: pulsa primero «Enviar catálogo, usuarios y ajustes» y edítala después.');
+  }
+
+  // --- Usuarios: mismas reglas que valida el formulario de Administración ---
+  const users = [];
+  const pinOwner = new Map();
+  sheetUsers.forEach((u, i) => {
+    const name = String(u.nombre ?? '').trim();
+    const pin = String(u.pin ?? '').trim();
+    if (!name) { problems.push(`Usuarios, fila ${fila(i)}: falta el nombre.`); return; }
+    if (!/^\d{4}$/.test(pin)) { problems.push(`Usuarios, fila ${fila(i)} (${name}): el PIN debe tener 4 dígitos.`); return; }
+    if (pinOwner.has(pin)) { problems.push(`Usuarios, fila ${fila(i)} (${name}): el PIN ${pin} ya lo usa ${pinOwner.get(pin)}.`); return; }
+    if (pin === config.adminPin) { problems.push(`Usuarios, fila ${fila(i)} (${name}): ese PIN coincide con el de administrador.`); return; }
+    pinOwner.set(pin, name);
+    users.push({ id: String(u.id ?? '').trim() || uid('u'), name, pin, active: u.activo !== false });
+  });
+  if (sheetUsers.length && !users.some((u) => u.active)) {
+    problems.push('No queda ningún usuario activo: nadie podría entrar en el TPV.');
+  }
+  if (!sheetUsers.length) problems.push('La hoja «Usuarios» está vacía.');
+
+  // --- Categorías: el catálogo las referencia por nombre, así que no pueden repetirse ---
+  const categories = [];
+  const catIdByName = new Map();
+  const catIds = new Set();
+  sheetCats.forEach((c, i) => {
+    const name = String(c.nombre ?? '').trim();
+    if (!name) { problems.push(`Categorías, fila ${fila(i)}: falta el nombre.`); return; }
+    const id = String(c.id ?? '').trim() || uid('c');
+    if (catIds.has(id)) { problems.push(`Categorías, fila ${fila(i)} (${name}): el ID «${id}» está repetido.`); return; }
+    if (catIdByName.has(normName(name))) { problems.push(`Categorías, fila ${fila(i)}: hay dos categorías llamadas «${name}».`); return; }
+    catIds.add(id);
+    catIdByName.set(normName(name), id);
+    categories.push({ id, name, emoji: c.emoji || '', color: c.color || null, order: c.orden || 0 });
+  });
+
+  // --- Productos ---
+  const prevById = new Map(config.products.map((p) => [p.id, p]));
+  const products = [];
+  const prodIds = new Set();
+  sheetProds.forEach((p, i) => {
+    const name = String(p.nombre ?? '').trim();
+    if (!name) { problems.push(`Catálogo, fila ${fila(i)}: falta el nombre del producto.`); return; }
+    const id = String(p.id ?? '').trim() || uid('p');
+    if (prodIds.has(id)) { problems.push(`Catálogo, fila ${fila(i)} (${name}): el ID «${id}» está repetido.`); return; }
+    const categoryId = catIdByName.get(normName(p.categoria));
+    if (!categoryId) { problems.push(`Catálogo, fila ${fila(i)} (${name}): la categoría «${String(p.categoria ?? '').trim()}» no existe en la hoja «Categorías».`); return; }
+    if (typeof p.precio !== 'number' || !isFinite(p.precio) || p.precio < 0) { problems.push(`Catálogo, fila ${fila(i)} (${name}): el precio no es un número válido.`); return; }
+    prodIds.add(id);
+    const prev = prevById.get(id);
+    products.push({
+      id, name, price: p.precio, categoryId, emoji: p.emoji || '',
+      color: prev ? (prev.color ?? null) : null, // el color no viaja a la hoja: se conserva el local
+      active: p.visible !== false, order: p.orden || 0,
+      ...stockFromSheet(p, prev, { includeStock, soldUnits })
+    });
+  });
+
+  if (problems.length) {
+    const e = new Error(problems.join('\n'));
+    e.problems = problems;
+    throw e;
+  }
+
+  // La hoja «Ajustes» no trae el logo ni conoce ajustes futuros: se parte de los locales y se
+  // sobreescribe solo lo que la hoja sí sabe. Si la hoja está vacía (null) no se toca nada.
+  const club = { ...config.club };
+  if (payload.club) {
+    club.name = String(payload.club.nombre ?? '').trim() || config.club.name;
+    club.subtitle = String(payload.club.subtitulo ?? '').trim();
+  }
+  const settings = { ...config.settings };
+  if (payload.ajustes) {
+    settings.keepAwake = !!payload.ajustes.keepAwake;
+    settings.vibrate = !!payload.ajustes.vibrate;
+  }
+
+  return { club, settings, users, categories, products };
 }
 
 /** Envía la cola pendiente. Devuelve { ok | skipped | empty | offline | busy | error, pending }. */

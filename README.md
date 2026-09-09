@@ -4,6 +4,8 @@ Terminal punto de venta para el bar del club, pensado para una **tablet Android 
 No tiene servidor propio ni base de datos: es una web estática (HTML, CSS y JavaScript sin dependencias)
 que se instala como aplicación y funciona **sin conexión** una vez cargada. Opcionalmente envía los
 cierres, el catálogo y el inventario a una **hoja de Google Sheets** mediante un script gratuito de Apps Script.
+Esa misma hoja sirve para **gestionar la configuración** (productos, categorías, usuarios y ajustes) y traérsela
+a la tablet con un botón.
 
 ## Qué hace
 
@@ -22,10 +24,14 @@ cierres, el catálogo y el inventario a una **hoja de Google Sheets** mediante u
   se recupera al anular, se repone desde Administración y avisa en el botón y en el informe cuando baja del mínimo.
 - **Histórico** de turnos cerrados con su informe y exportación CSV (resumen de turnos y detalle de tickets).
 - **Copias automáticas**: al cerrar cada turno se descarga un JSON (y opcionalmente el CSV) a la carpeta Descargas.
-- **Google Sheets**: envío automático de cierres, tickets, catálogo e inventario a una hoja de cálculo de tu Drive,
-  con cola de reintentos si no hay conexión. El script deja además un JSON por cierre en una carpeta de Drive.
+- **Google Sheets**: envío automático de cierres, tickets, catálogo, usuarios, ajustes e inventario a una hoja de
+  cálculo de tu Drive, con cola de reintentos si no hay conexión. El script deja además un JSON por cierre en una
+  carpeta de Drive.
+- **Configuración desde la hoja**: se puede editar el catálogo, las categorías, los usuarios y los ajustes del club
+  en el Excel y traerlo todo a la tablet con «Actualizar desde la hoja». Es la forma cómoda de mantener varias
+  tablets con la misma configuración.
 - **Administración**: productos, categorías, inventario, usuarios, nombre y logo del club, ajustes, Google Sheets
-  y copias de seguridad.
+  (envío y actualización desde la hoja) y copias de seguridad.
 - **Sin IVA**: los precios son netos y finales; no se calculan bases imponibles ni impuestos.
 
 ## Puesta en marcha
@@ -121,9 +127,35 @@ Versión: Nueva → Implementar*. Así la URL no cambia.
 | Tickets | una fila por línea de ticket, con nº de ticket, vendedor, producto, cantidad, importe, invitación y anulado | al cerrar el turno |
 | Catálogo | todos los productos con precio, categoría, visibilidad, stock y mínimo (se reescribe entera) | al cerrar y al cambiar el catálogo |
 | Categorías | las categorías con emoji, color y orden | igual que Catálogo |
+| Usuarios | nombre, PIN y si está activo (se reescribe entera) | igual que Catálogo |
+| Ajustes | nombre y subtítulo del club, pantalla encendida y vibración (se reescribe entera) | igual que Catálogo |
 | Inventario | movimientos de stock: ventas del turno por producto, reposiciones, recuentos | al cerrar y al reponer |
 
 Además el script guarda `cierre_FECHA_IDTURNO.json` en la carpeta de Drive «TPV El Descanso - cierres».
+
+### Gestionar la configuración desde la hoja
+
+Las pestañas **Catálogo**, **Categorías**, **Usuarios** y **Ajustes** se pueden editar a mano en el Excel.
+Después, en la tablet: *Administración → Google Sheets → **📥 Actualizar desde la hoja***.
+
+- **Manda la hoja**: lo que no esté en ella se elimina de la tablet. Antes de aplicar nada la app enseña un
+  resumen con las altas, los cambios y —con su nombre— las bajas.
+- Si algo no cuadra (un PIN de menos de 4 dígitos o repetido, ningún usuario activo, un producto con una
+  categoría que no existe, un precio que no es un número, hojas vacías) **no se cambia nada** y la app enumera
+  todos los problemas para corregirlos en la hoja.
+- **Las existencias son opcionales**, con una casilla en cada actualización. Sin marcarla se conservan las de la
+  tablet, que suelen estar más al día. Marcándola con un turno abierto, a las unidades de la hoja se les resta lo
+  que ya se ha vendido en ese turno, así que se respeta el recuento hecho en el Excel sin perder las ventas.
+- **No se importan nunca** el PIN de administrador ni la URL y el token de la conexión: un valor equivocado en la
+  hoja dejaría la tablet sin acceso o incomunicada. Esos se cambian solo desde Administración.
+- Las filas nuevas pueden dejar la columna **ID** en blanco: la app genera el identificador y lo devuelve a la
+  hoja en el siguiente envío. Las columnas *Activo*, *Visible* y *Controla stock* aceptan `Sí`, `No`, `X`, `1`
+  o `TRUE`, y en blanco se entienden como *Sí* (salvo *Controla stock*, que se deduce de si hay stock escrito).
+- El **color** de cada producto no viaja a la hoja: se conserva el que tuviera en la tablet.
+
+> ⚠️ **Los PIN de los usuarios quedan escritos en la hoja en texto plano**: quien tenga acceso al documento puede
+> entrar en el TPV como cualquiera. No lo compartas con enlace público y que el PIN de administrador —que nunca
+> sale de la tablet— sea distinto de todos ellos.
 
 ### Cómo funciona por dentro
 
@@ -131,6 +163,8 @@ Además el script guarda `cierre_FECHA_IDTURNO.json` en la carpeta de Drive «TP
   Si la tablet está sin conexión, el icono ☁️ de la barra de ventas muestra los pendientes y se reintenta al
   abrir la app, al recuperar la red, cada 5 minutos o al tocar el icono.
 - El script es **idempotente**: reenviar un cierre o un movimiento ya guardado no duplica filas.
+- «Actualizar desde la hoja» no usa la cola: es una consulta directa (`GET …/exec?token=…&accion=config`) que
+  devuelve las cuatro pestañas de configuración y no cambia nada en la tablet hasta que se confirma.
 - La URL del script funciona como dirección pública y el **token** como contraseña. Nadie ve la hoja salvo
   con quien la compartas desde Drive.
 - Sin conexión el TPV sigue vendiendo con normalidad; la nube es solo la copia.
@@ -162,7 +196,7 @@ Copias fuera de la tablet:
   misma u otra tablet.
 
 Avisos: si se borran los datos de Chrome, se desinstala la app o se pierde la tablet, se pierden los datos
-locales. Dos tablets no comparten datos entre sí. Si el histórico no se pudiera guardar en IndexedDB, el cierre
+locales. Dos tablets no comparten turnos ni tickets entre sí (la configuración sí, a través de la hoja de Google). Si el histórico no se pudiera guardar en IndexedDB, el cierre
 se guarda en `tpv.archive_fallback` (localStorage) y la app avisa.
 
 ## Actualizar la app
@@ -181,7 +215,7 @@ js/utils.js               utilidades (importes, fechas, CSV, compartir, registro
 js/storage.js             localStorage + IndexedDB
 js/ui.js                  modales, teclado numérico, PIN y avisos
 js/report.js              cálculo del informe, texto para compartir y CSV
-js/sync.js                cola y envío a Google Sheets
+js/sync.js                cola y envío a Google Sheets, y actualización de la configuración desde la hoja
 js/admin.js               pantalla de administración
 js/app.js                 flujo principal: acceso, turno, ventas, cobro, cierre, inventario e histórico
 sw.js                     service worker (modo sin conexión)

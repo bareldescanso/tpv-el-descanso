@@ -476,7 +476,8 @@ function renderAdminCloud(body) {
     <div class="data-grid">
       <section class="rep-card">
         <h4>Conexión con Google Sheets</h4>
-        <p class="muted">Cada cierre se envía con sus tickets a una hoja de cálculo de tu Google Drive, junto con el catálogo y el inventario. El script guarda además un JSON por cierre en una carpeta de Drive. Sin conexión, todo queda en cola y se envía después.</p>
+        <p class="muted">Cada cierre se envía con sus tickets a una hoja de cálculo de tu Google Drive, junto con el catálogo, los usuarios, los ajustes y el inventario. El script guarda además un JSON por cierre en una carpeta de Drive. Sin conexión, todo queda en cola y se envía después.</p>
+        <p class="muted small">La hoja también sirve para <strong>gestionar la configuración</strong>: edita las pestañas Catálogo, Categorías, Usuarios y Ajustes y pulsa «Actualizar desde la hoja». Como los PIN quedan escritos ahí, no compartas el documento con enlace público.</p>
         <form class="form" id="cloud-form" autocomplete="off">
           <label class="check"><input type="checkbox" name="enabled" ${s.enabled ? 'checked' : ''}> Enviar automáticamente a Google Sheets</label>
           <div class="field"><label>URL de la aplicación web <span class="muted">(termina en /exec)</span></label><input name="url" type="url" inputmode="url" value="${esc(s.url || '')}" placeholder="https://script.google.com/macros/s/…/exec"></div>
@@ -489,7 +490,8 @@ function renderAdminCloud(body) {
         <div id="sync-status"></div>
         <div class="row wrap">
           <button class="btn" data-action="sync-now">📤 Enviar pendientes</button>
-          <button class="btn" data-action="cloud-send-catalog">🗂 Enviar catálogo e inventario</button>
+          <button class="btn" data-action="cloud-send-catalog">🗂 Enviar catálogo, usuarios y ajustes</button>
+          <button class="btn" data-action="cloud-fetch-config">📥 Actualizar desde la hoja</button>
           <button class="btn" data-action="cloud-send-history">🕘 Enviar todo el histórico</button>
         </div>
       </section>
@@ -553,9 +555,135 @@ ACTIONS['cloud-send-catalog'] = async () => {
   if (!syncEnabled()) { toast('Activa y guarda primero la conexión', 'warn'); return; }
   await syncEnqueueCatalog();
   const r = await syncFlush({ manual: true });
-  if (r.ok) toast('Catálogo e inventario enviados', 'success');
+  if (r.ok) toast('Catálogo, usuarios y ajustes enviados', 'success');
   else toast(`No se pudo enviar: ${r.error || 'sin conexión'}`, 'error', 6000);
 };
+/* ---------- Actualizar desde la hoja ---------- */
+
+/*
+ * Empareja por id lo que hay en la tablet con lo que trae la hoja para poder enseñar de antemano
+ * qué va a cambiar. Lo que de verdad importa son las bajas: con «la hoja manda» desaparecen de la
+ * tablet, y es lo único que no se puede deshacer desde aquí.
+ */
+function importDiff(prev, next, fields) {
+  const prevById = new Map(prev.map((x) => [x.id, x]));
+  const nextIds = new Set(next.map((x) => x.id));
+  const val = (o, f) => (f === 'active' ? o[f] !== false : (o[f] ?? null));
+  let added = 0, changed = 0;
+  next.forEach((n) => {
+    const p = prevById.get(n.id);
+    if (!p) { added++; return; }
+    if (fields.some((f) => val(p, f) !== val(n, f))) changed++;
+  });
+  return { added, changed, removed: prev.filter((p) => !nextIds.has(p.id)).map((p) => p.name) };
+}
+
+function importDiffRow(label, total, d) {
+  const bits = [`${total} en la hoja`];
+  if (d.added) bits.push(`${d.added} ${d.added === 1 ? 'alta' : 'altas'}`);
+  if (d.changed) bits.push(`${d.changed} ${d.changed === 1 ? 'cambio' : 'cambios'}`);
+  if (d.removed.length) bits.push(`${d.removed.length} ${d.removed.length === 1 ? 'baja' : 'bajas'}`);
+  if (bits.length === 1) bits.push('sin cambios');
+  return `<div class="rep-row ${d.removed.length ? 'diff bad' : ''}"><span>${label}</span><strong class="wrap-text">${bits.join(' · ')}</strong></div>`;
+}
+
+/**
+ * Confirmación de la importación: resumen de cambios y casilla de existencias.
+ * Resuelve { includeStock } si se acepta y null si se cancela o se cierra el modal.
+ */
+function importPreviewDialog({ rowsHTML, removed, hasOpenTurn, hoja }) {
+  return new Promise((res) => {
+    let answered = false;
+    const finish = (v) => { if (!answered) { answered = true; res(v); } };
+    const m = openModal(`
+      <form class="form" autocomplete="off">
+        <h3 class="modal-title">Actualizar desde la hoja</h3>
+        <p class="modal-text">Manda la hoja${hoja ? ` «${esc(hoja)}»` : ''}: lo que no esté en ella se eliminará de esta tablet. El PIN de administrador y esta conexión no se tocan.</p>
+        ${rowsHTML}
+        ${removed.length ? `<div class="field"><label>Se eliminarán de la tablet</label><p class="small wrap-text">${removed.map(esc).join(' · ')}</p></div>` : ''}
+        <label class="check"><input type="checkbox" name="stock"> Traer también las existencias (Stock y Mínimo)</label>
+        <p class="muted small">${hasOpenTurn
+        ? 'Hay un turno abierto: a las existencias de la hoja se les restará lo que ya se ha vendido en él.'
+        : 'Si no la marcas se conservan las existencias de esta tablet, que suelen estar más al día que la hoja.'}</p>
+        <div class="row row-end">
+          <button type="button" class="btn" data-action="m-close">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Actualizar</button>
+        </div>
+      </form>`, { cls: 'modal-form', onClose: () => finish(null) });
+    m.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const includeStock = !!new FormData(e.target).get('stock');
+      finish({ includeStock });
+      closeModal(m);
+    });
+  });
+}
+
+ACTIONS['cloud-fetch-config'] = async () => {
+  if (!syncEnabled()) { toast('Activa y guarda primero la conexión', 'warn'); return; }
+  if (ticket.lines.length) { toast('Termina o vacía el ticket en curso antes de actualizar', 'warn', 4500); return; }
+
+  syncState.progress = 'Descargando la configuración…'; renderSyncStatus();
+  let payload;
+  try {
+    payload = await syncFetchConfig();
+  } catch (e) {
+    syncState.progress = ''; syncState.lastError = e.message; persistSyncState(); renderSyncStatus();
+    toast(`No se pudo descargar: ${e.message}`, 'error', 7000);
+    return;
+  }
+  syncState.progress = ''; renderSyncStatus();
+
+  const soldUnits = soldUnitsInOpenTurn();
+  // Se convierte primero sin existencias: sirve para validar y para el resumen, y es exactamente
+  // lo que se aplica si la casilla se queda sin marcar.
+  let preview;
+  try {
+    preview = configFromSheet(payload, { includeStock: false, soldUnits });
+  } catch (e) {
+    await alertDialog('La hoja tiene datos que hay que corregir',
+      `No se ha cambiado nada en esta tablet. Arregla esto en la hoja y vuelve a pulsar «Actualizar desde la hoja»:<br><br>${(e.problems || [e.message]).map((x) => `• ${esc(x)}`).join('<br>')}`);
+    return;
+  }
+
+  const d = {
+    users: importDiff(config.users, preview.users, ['name', 'pin', 'active']),
+    cats: importDiff(config.categories, preview.categories, ['name', 'emoji', 'order']),
+    prods: importDiff(config.products, preview.products, ['name', 'price', 'categoryId', 'emoji', 'active', 'order'])
+  };
+  const clubChanged = preview.club.name !== config.club.name || (preview.club.subtitle || '') !== (config.club.subtitle || '');
+  const rowsHTML = [
+    importDiffRow('Usuarios', preview.users.length, d.users),
+    importDiffRow('Categorías', preview.categories.length, d.cats),
+    importDiffRow('Productos', preview.products.length, d.prods),
+    clubChanged ? `<div class="rep-row"><span>Nombre del club</span><strong class="wrap-text">${esc(preview.club.name)}</strong></div>` : ''
+  ].join('');
+
+  const ans = await importPreviewDialog({
+    rowsHTML,
+    removed: [...d.users.removed, ...d.cats.removed, ...d.prods.removed],
+    hasOpenTurn: !!turn,
+    hoja: payload.hoja
+  });
+  if (!ans) return;
+
+  // Las validaciones no dependen de las existencias, así que esta segunda conversión no puede
+  // fallar si la primera ha pasado.
+  const next = ans.includeStock ? configFromSheet(payload, { includeStock: true, soldUnits }) : preview;
+  Object.assign(config.club, next.club);
+  Object.assign(config.settings, next.settings);
+  config.users = next.users;
+  config.categories = next.categories;
+  config.products = next.products;
+  saveConfig(); applyBranding(); renderAdmin();
+  toast(`Actualizado desde la hoja: ${next.users.length} usuarios, ${next.categories.length} categorías y ${next.products.length} productos`, 'success', 5000);
+
+  // Se devuelve el resultado a la hoja para que recoja lo que la app haya resuelto por su cuenta
+  // (ids nuevos de las filas sin ID y las existencias ya fusionadas).
+  await syncEnqueueCatalog();
+  syncFlush();
+};
+
 ACTIONS['cloud-send-history'] = async () => {
   if (!syncEnabled()) { toast('Activa y guarda primero la conexión', 'warn'); return; }
   const turns = await TPVDB.getTurns();

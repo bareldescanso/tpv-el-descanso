@@ -4,7 +4,7 @@
  * local al instante y la refresca en segundo plano cuando hay red).
  * Al publicar una nueva versión, cambia VERSION para forzar la limpieza de la caché antigua.
  */
-const VERSION = 'v1.1.0';
+const VERSION = 'v1.2.0';
 const CACHE = `tpv-descanso-${VERSION}`;
 const ASSETS = [
   './', './index.html', './manifest.webmanifest',
