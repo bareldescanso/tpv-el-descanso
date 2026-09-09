@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>TPV El Descanso</title>
+  <meta name="description" content="Terminal punto de venta del bar del club El Descanso">
+  <meta name="theme-color" content="#1f5f4a">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ===== Acceso ===== -->
+  <section id="view-login" class="view view-login">
+    <div class="login-card">
+      <header class="login-brand">
+        <img class="brand-logo big" src="icons/logo.svg" alt="">
+        <h1 class="brand-name">El Descanso</h1>
+        <p class="muted" id="login-date"></p>
+      </header>
+      <div id="login-turn-banner" class="banner hidden"></div>
+      <p class="login-hint">¿Quién atiende la barra?</p>
+      <div id="login-users" class="user-grid"></div>
+      <footer class="login-footer">
+        <button class="btn btn-ghost" data-action="login-history">📊 Histórico</button>
+        <button class="btn btn-ghost" data-action="login-admin">⚙️ Administración</button>
+      </footer>
+    </div>
+    <div class="login-version muted" id="app-version"></div>
+  </section>
+
+  <!-- ===== Apertura de turno ===== -->
+  <section id="view-open" class="view hidden">
+    <header class="topbar">
+      <div class="brand"><img class="brand-logo" src="icons/logo.svg" alt=""><span class="brand-name">El Descanso</span></div>
+      <div class="topbar-title">Apertura de turno</div>
+      <div></div>
+    </header>
+    <div class="center-wrap">
+      <div class="panel open-panel">
+        <p class="muted" id="open-user"></p>
+        <h2>Saldo inicial de caja</h2>
+        <p class="muted">Efectivo base que hay ahora en el cajón</p>
+        <div id="open-amount" class="amount-display">0 €</div>
+        <div id="open-suggest" class="quick"></div>
+        <div id="open-keypad"></div>
+        <div class="row">
+          <button class="btn" data-action="open-cancel">Cancelar</button>
+          <button class="btn btn-primary btn-lg grow" data-action="open-confirm">Abrir turno</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Ventas ===== -->
+  <section id="view-sales" class="view hidden">
+    <header class="topbar">
+      <div class="brand"><img class="brand-logo" src="icons/logo.svg" alt=""><span class="brand-name">El Descanso</span></div>
+      <div class="turn-box"><span id="turn-info"></span><span id="turn-stats" class="muted"></span></div>
+      <nav class="topbar-actions">
+        <button class="tb-btn sync-badge hidden" id="sync-badge" data-action="sync-now" title="Sincronización con Google Sheets">☁️<span class="count hidden" id="sync-pending">0</span></button>
+        <button class="tb-btn" data-action="tickets-list">🧾 Tickets <span class="count" id="tickets-count">0</span></button>
+        <button class="tb-btn" data-action="sales-history">📊</button>
+        <button class="tb-btn" data-action="sales-admin" title="Administración">⚙️</button>
+        <button class="tb-btn" data-action="lock" title="Bloquear">🔒</button>
+        <button class="tb-btn tb-danger" data-action="close-start">Cerrar turno</button>
+      </nav>
+    </header>
+    <div class="sales-layout">
+      <div class="catalog">
+        <nav id="cat-tabs" class="cat-tabs"></nav>
+        <div id="product-grid" class="product-grid"></div>
+      </div>
+      <aside class="ticket">
+        <header class="ticket-head">
+          <span>Ticket <small class="muted" id="ticket-count">0 art.</small></span>
+          <button class="btn btn-sm btn-ghost" data-action="ticket-clear">Vaciar</button>
+        </header>
+        <div id="ticket-lines" class="ticket-lines"></div>
+        <footer class="ticket-foot">
+          <div class="ticket-total"><span>Total</span><strong id="ticket-total">0,00 €</strong></div>
+          <button class="btn btn-pay" id="btn-pay" data-action="pay" disabled>💶 Cobrar</button>
+        </footer>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ===== Cierre: arqueo ===== -->
+  <section id="view-close" class="view hidden">
+    <header class="topbar">
+      <button class="tb-btn" data-action="close-cancel">← Volver a ventas</button>
+      <div class="topbar-title">Cierre de turno · arqueo de caja</div>
+      <div></div>
+    </header>
+    <div class="scroll">
+      <div class="close-layout">
+        <div id="close-summary" class="kpi-grid kpi-3"></div>
+        <div class="panel">
+          <div class="row row-between">
+            <h3>Efectivo real en el cajón</h3>
+            <button class="btn btn-sm" id="btn-manual-toggle" data-action="manual-toggle">Introducir el total a mano</button>
+          </div>
+          <div id="denoms-wrap"><div id="denoms" class="denoms"></div></div>
+          <div id="manual-wrap" class="hidden manual-wrap">
+            <button class="amount-btn" data-action="manual-edit"><span id="manual-total">0,00 €</span> <small>cambiar</small></button>
+          </div>
+        </div>
+        <div class="close-foot">
+          <div class="counted"><span class="muted">Efectivo contado</span><strong id="counted-total">0,00 €</strong><span id="close-diff" class="badge"></span></div>
+          <button class="btn btn-primary btn-lg" data-action="close-continue">Ver informe →</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Informe ===== -->
+  <section id="view-report" class="view hidden">
+    <header class="topbar">
+      <button class="tb-btn" id="report-back" data-action="report-back-history">← Volver</button>
+      <div class="topbar-title" id="report-title">Informe</div>
+      <div></div>
+    </header>
+    <div class="scroll" id="report-scroll">
+      <div class="report" id="report-body"></div>
+    </div>
+    <footer class="report-actions" id="report-actions"></footer>
+  </section>
+
+  <!-- ===== Histórico ===== -->
+  <section id="view-history" class="view hidden">
+    <header class="topbar">
+      <button class="tb-btn" id="history-back" data-action="history-back">← Inicio</button>
+      <div class="topbar-title">Histórico de turnos</div>
+      <nav class="topbar-actions">
+        <button class="tb-btn" data-action="history-export-turns">🗂 CSV turnos</button>
+        <button class="tb-btn" data-action="history-export-tickets">🧾 CSV tickets</button>
+      </nav>
+    </header>
+    <div class="scroll">
+      <div class="history">
+        <p class="muted" id="history-summary"></p>
+        <div id="history-list" class="hist-list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Administración ===== -->
+  <section id="view-admin" class="view hidden">
+    <header class="topbar">
+      <button class="tb-btn" data-action="admin-exit">← Salir</button>
+      <div class="topbar-title">Administración</div>
+      <div></div>
+    </header>
+    <div class="admin-layout">
+      <nav id="admin-nav" class="admin-nav"></nav>
+      <div class="admin-content">
+        <div id="admin-warning" class="banner banner-warn hidden">⚠️ El PIN de administrador sigue siendo el de fábrica (1234). Cámbialo en «Usuarios».</div>
+        <div id="admin-body" class="admin-body"></div>
+      </div>
+    </div>
+  </section>
+
+</div>
+<div id="modals"></div>
+<div id="toasts"></div>
+
+<script src="js/defaults.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/report.js"></script>
+<script src="js/sync.js"></script>
+<script src="js/admin.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
