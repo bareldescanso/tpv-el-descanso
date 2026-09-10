@@ -126,6 +126,17 @@ async function syncTest(url, token) {
 
 /* ---------- Configuración de vuelta: hoja → app ---------- */
 
+/*
+ * Error de red, marcado para poder distinguirlo. La comprobación automática del arranque calla ante
+ * estos —una tablet sin cobertura es lo normal— y avisa de todos los demás: un token mal puesto o
+ * un script sin implementar tienen que verse, o el usuario solo sabrá que «no se actualiza nada».
+ */
+function netError(msg) {
+  const e = new Error(msg);
+  e.offline = true;
+  return e;
+}
+
 /** Consulta de lectura al script. Mismos avisos de error que syncTest, para no tener dos idiomas. */
 async function syncGet(params, timeoutMs = 30000) {
   const cfg = syncCfg();
@@ -143,8 +154,8 @@ async function syncGet(params, timeoutMs = 30000) {
     if (!data.ok) throw new Error(data.error === 'token' ? 'Token incorrecto' : (data.error || 'Error en el script'));
     return data;
   } catch (e) {
-    if (e.name === 'AbortError') throw new Error('Tiempo de espera agotado');
-    if (e instanceof TypeError) throw new Error('No se pudo conectar con el script. Comprueba la conexión a internet y la URL.');
+    if (e.name === 'AbortError') throw netError('Tiempo de espera agotado');
+    if (e instanceof TypeError) throw netError('No se pudo conectar con el script. Comprueba la conexión a internet y la URL.');
     throw e;
   } finally { clearTimeout(timer); }
 }

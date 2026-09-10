@@ -5,7 +5,7 @@ No tiene servidor propio ni base de datos: es una web estática (HTML, CSS y Jav
 que se instala como aplicación y funciona **sin conexión** una vez cargada. Opcionalmente envía los
 cierres, el catálogo y el inventario a una **hoja de Google Sheets** mediante un script gratuito de Apps Script.
 Esa misma hoja sirve para **gestionar la configuración** (productos, categorías, usuarios y ajustes) y para
-**recuperar el histórico** en una tablet nueva, todo con un botón.
+**recuperar el histórico** en una tablet nueva. Al abrir la app se comprueba sola y se pone al día.
 
 ## Qué hace
 
@@ -30,6 +30,8 @@ Esa misma hoja sirve para **gestionar la configuración** (productos, categoría
 - **Configuración desde la hoja**: se puede editar el catálogo, las categorías, los usuarios y los ajustes del club
   en el Excel y traerlo todo a la tablet con «Actualizar desde la hoja». Es la forma cómoda de mantener varias
   tablets con la misma configuración.
+- **Se pone al día al abrir la app**: si la hoja trae algo distinto se aplica sin preguntar, y solo se avisa de lo
+  que ha entrado. No hay que acordarse de pulsar nada.
 - **Histórico desde la hoja**: esa misma actualización puede traerse de vuelta los turnos cerrados, sus tickets y
   los movimientos de inventario, para dejar como estaba una tablet nueva o a la que se le hayan borrado los datos.
 - **Administración**: productos, categorías, inventario, usuarios, nombre y logo del club, ajustes, Google Sheets
@@ -184,6 +186,32 @@ por defecto—** para traerlos junto con sus tickets y los movimientos de invent
 - Los informes de los turnos recuperados se recalculan desde sus tickets, así que el cuadre, «Por persona», «Por
   producto» y los CSV salen igual que en la tablet original.
 
+### Se actualiza sola al abrir la app
+
+No hace falta entrar en Administración: **cada vez que se abre la app se comprueba la hoja**. Si trae algo
+distinto se aplica en el momento, sin preguntar, y solo aparece un aviso con lo que ha entrado
+(«Actualizado desde la hoja: 1 usuario, 2 productos»). Si todo está igual no se dice nada.
+
+- Antes de leer la hoja se **vacía la cola de envíos**. Es el orden que importa: si un cambio hecho en la tablet
+  estuviera todavía sin subir, leer la hoja primero lo desharía. Por eso, mientras quede algo pendiente de enviar,
+  la comprobación se deja para la próxima vez.
+- **No se comprueba con un ticket a medias** ni con la pantalla de cobro abierta: cambiar precios debajo de una
+  venta en curso sería peor que esperar.
+- Se hace **una vez por sesión**, al abrir la app, y se reintenta al recuperar la conexión.
+- **Sin cobertura no dice nada** —una tablet sin red es lo normal—, pero un token equivocado o un script sin
+  implementar **sí avisan**: si no, lo único que se vería es que «no se actualiza nada».
+- **Las existencias no se tocan** en la comprobación automática: el recuento de la tablet baja con cada venta, así
+  que es más de fiar que el de la hoja. Siguen siendo la casilla del botón manual.
+- Si la hoja está a medio editar (un PIN repetido, un producto sin categoría, una pestaña vacía) **no se cambia
+  nada** y se avisa de que hay datos que corregir; el detalle está en *Administración → Google Sheets*.
+- Los **turnos que falten** se traen en la misma comprobación, con sus tickets y los movimientos de inventario,
+  con las mismas reglas del apartado anterior: solo se añade lo que no esté.
+- En una tablet nueva hay que pegar **una vez** la URL y el token en *Administración → Google Sheets*: no van en el
+  código, porque el repositorio es público. A partir de ahí ya se actualiza sola.
+
+El botón **📥 Actualizar desde la hoja** sigue estando para forzarlo en el momento, y es el único que enseña el
+resumen antes de aplicar y el que permite traer también las existencias.
+
 ### Cómo funciona por dentro
 
 - La app guarda cada envío en una cola local (IndexedDB) y lo manda con un `POST` al script cuando hay red.
@@ -191,7 +219,8 @@ por defecto—** para traerlos junto con sus tickets y los movimientos de invent
   abrir la app, al recuperar la red, cada 5 minutos o al tocar el icono.
 - El script es **idempotente**: reenviar un cierre o un movimiento ya guardado no duplica filas.
 - «Actualizar desde la hoja» no usa la cola: son consultas directas (`GET …/exec?token=…&accion=…`) y no cambian
-  nada en la tablet hasta que se confirma. Hay cuatro: `accion=config` devuelve las cuatro pestañas de
+  nada en la tablet hasta que se confirma. La comprobación del arranque es la misma función en modo silencioso:
+  aplica lo que venga sin diálogo y sin tocar las existencias. Hay cuatro: `accion=config` devuelve las cuatro pestañas de
   configuración; `accion=turnos`, solo los totales de cada cierre, que es lo justo para saber qué turnos faltan
   sin descargar nada gordo; `accion=tickets&turnos=id1,id2`, las líneas de esos cierres y de ninguno más (en
   lotes de cinco turnos); y `accion=inventario&desde=&limite=`, los movimientos por páginas de 500.

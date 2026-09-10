@@ -1,7 +1,7 @@
 /* TPV El Descanso — lógica principal: pantallas, ticket, cobro, cierre e histórico. */
 'use strict';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 const DENOMS = [50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50, 20, 10, 5, 2, 1];
 
 /* ---------- Estado ---------- */
@@ -816,6 +816,30 @@ window.addEventListener('beforeunload', (e) => {
 
 /* ---------- Arranque ---------- */
 
+let sheetChecked = false;
+
+/*
+ * Comprobación de la hoja al abrir la app: si el Excel trae algo distinto se aplica sin preguntar
+ * (ver sheetImport en admin.js). Se hace una sola vez por sesión.
+ *
+ * El orden importa: primero se vacía la cola y solo después se lee la hoja. Al revés, un catálogo
+ * pendiente de subir llegaría a la hoja después de haberla leído y la lectura lo desharía; por eso
+ * mismo, si queda algo pendiente de enviar, la comprobación se deja para la próxima. Sin conexión
+ * tampoco se intenta: se reintenta al recuperar la red.
+ */
+async function checkSheetOnStart() {
+  if (sheetChecked || !syncEnabled() || !navigator.onLine) return;
+  if (syncState.pending || ticket.lines.length) return;
+  sheetChecked = true;
+  try { await sheetImport({ silent: true }); }
+  catch (e) { console.error('No se pudo comprobar la hoja al arrancar', e); }
+}
+
+async function flushAndCheck() {
+  await syncFlush();
+  await checkSheetOnStart();
+}
+
 function init() {
   loadConfig();
   turn = lsLoad(LS_TURN, null);
@@ -827,8 +851,8 @@ function init() {
   registerSW();
   loadSyncState();
   showView('login');
-  syncFlush();
-  window.addEventListener('online', () => syncFlush());
+  flushAndCheck();
+  window.addEventListener('online', flushAndCheck);
   setInterval(() => syncFlush(), 5 * 60 * 1000);
 }
 

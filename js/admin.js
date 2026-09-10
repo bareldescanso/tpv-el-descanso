@@ -673,9 +673,22 @@ async function importHistory(history, cfg) {
   return { turnos, tickets, movs, problems };
 }
 
-ACTIONS['cloud-fetch-config'] = async () => {
-  if (!syncEnabled()) { toast('Activa y guarda primero la conexión', 'warn'); return; }
-  if (ticket.lines.length) { toast('Termina o vacía el ticket en curso antes de actualizar', 'warn', 4500); return; }
+/*
+ * Actualización desde la hoja, en sus dos modos.
+ *
+ *  - Manual, con el botón de Administración: enseña el resumen de altas, cambios y bajas y no
+ *    aplica nada hasta que se confirma; ahí se elige si traer las existencias y el histórico.
+ *  - Automático al abrir la app (`silent`): si la hoja trae algo distinto se aplica sin preguntar y
+ *    solo se avisa de lo que ha entrado; si está todo igual no se dice nada y la apertura cuesta una
+ *    consulta pequeña. Sin cobertura calla, pero de un token incorrecto o de un script sin
+ *    implementar sí avisa: si no, «no se actualiza nada» y nadie sabe por qué.
+ *
+ * En automático **no se tocan las existencias**: el recuento de la tablet baja con cada venta, así
+ * que es más de fiar que el de la hoja. Siguen siendo la casilla del modo manual.
+ */
+async function sheetImport({ silent = false } = {}) {
+  if (!syncEnabled()) { if (!silent) toast('Activa y guarda primero la conexión', 'warn'); return; }
+  if (ticket.lines.length) { if (!silent) toast('Termina o vacía el ticket en curso antes de actualizar', 'warn', 4500); return; }
 
   syncState.progress = 'Descargando la configuración…'; renderSyncStatus();
   let payload;
@@ -683,17 +696,18 @@ ACTIONS['cloud-fetch-config'] = async () => {
     payload = await syncFetchConfig();
   } catch (e) {
     syncState.progress = ''; syncState.lastError = e.message; persistSyncState(); renderSyncStatus();
-    toast(`No se pudo descargar: ${e.message}`, 'error', 7000);
+    if (!silent) toast(`No se pudo descargar: ${e.message}`, 'error', 7000);
+    else if (!e.offline) toast(`No se pudo leer la hoja: ${e.message}`, 'error', 8000);
     return;
   }
-  // Los agregados del histórico son baratos y hacen falta para enseñar de antemano cuántos turnos
-  // faltan. Si esta consulta falla no se cancela nada: la configuración es lo urgente y sigue.
+  // Los agregados del histórico son baratos y hacen falta para saber cuántos turnos faltan. Si esta
+  // consulta falla no se cancela nada: la configuración es lo urgente y sigue.
   let sheetTurns = null;
   try {
     syncState.progress = 'Consultando el histórico…'; renderSyncStatus();
     sheetTurns = await syncFetchTurns();
   } catch (e) {
-    toast(`No se pudo consultar el histórico de la hoja: ${e.message}`, 'warn', 6000);
+    if (!silent) toast(`No se pudo consultar el histórico de la hoja: ${e.message}`, 'warn', 6000);
   }
   syncState.progress = ''; renderSyncStatus();
 
@@ -704,8 +718,15 @@ ACTIONS['cloud-fetch-config'] = async () => {
   try {
     preview = configFromSheet(payload, { includeStock: false, soldUnits });
   } catch (e) {
+    const lista = e.problems || [e.message];
+    syncState.lastError = `La hoja tiene ${lista.length} ${lista.length === 1 ? 'dato' : 'datos'} que hay que corregir`;
+    persistSyncState(); renderSyncStatus();
+    if (silent) {
+      toast(`${syncState.lastError}. No se ha cambiado nada; el detalle está en Administración → Google Sheets.`, 'warn', 8000);
+      return;
+    }
     await alertDialog('La hoja tiene datos que hay que corregir',
-      `No se ha cambiado nada en esta tablet. Arregla esto en la hoja y vuelve a pulsar «Actualizar desde la hoja»:<br><br>${(e.problems || [e.message]).map((x) => `• ${esc(x)}`).join('<br>')}`);
+      `No se ha cambiado nada en esta tablet. Arregla esto en la hoja y vuelve a pulsar «Actualizar desde la hoja»:<br><br>${lista.map((x) => `• ${esc(x)}`).join('<br>')}`);
     return;
   }
 
@@ -715,6 +736,11 @@ ACTIONS['cloud-fetch-config'] = async () => {
     prods: importDiff(config.products, preview.products, ['name', 'price', 'categoryId', 'emoji', 'active', 'order'])
   };
   const clubChanged = preview.club.name !== config.club.name || (preview.club.subtitle || '') !== (config.club.subtitle || '');
+  const settingsChanged = preview.settings.keepAwake !== config.settings.keepAwake || preview.settings.vibrate !== config.settings.vibrate;
+  const cambios = d.users.added + d.users.changed + d.users.removed.length
+    + d.cats.added + d.cats.changed + d.cats.removed.length
+    + d.prods.added + d.prods.changed + d.prods.removed.length
+    + (clubChanged ? 1 : 0) + (settingsChanged ? 1 : 0);
 
   let history = null;
   if (sheetTurns) {
@@ -726,60 +752,105 @@ ACTIONS['cloud-fetch-config'] = async () => {
       movimientosTotal: sheetTurns.movimientosTotal || 0
     };
   }
+  // Para decidir si merece la pena paginar el inventario basta con contar lo que ya hay aquí. Es una
+  // estimación —la tablet puede tener movimientos aún sin subir— pero solo decide si se descarga:
+  // importar filtra por ID, así que equivocarse por arriba no duplica nada, solo gasta una consulta.
+  let faltanMovs = 0;
+  if (history && history.movimientosTotal) {
+    faltanMovs = Math.max(0, history.movimientosTotal - (await TPVDB.getStockMoves(0)).length);
+  }
+  const hayHistorico = !!(history && (history.faltan.length || faltanMovs));
 
-  const rowsHTML = [
-    importDiffRow('Usuarios', preview.users.length, d.users),
-    importDiffRow('Categorías', preview.categories.length, d.cats),
-    importDiffRow('Productos', preview.products.length, d.prods),
-    clubChanged ? `<div class="rep-row"><span>Nombre del club</span><strong class="wrap-text">${esc(preview.club.name)}</strong></div>` : '',
-    history ? `<div class="rep-row"><span>Histórico</span><strong class="wrap-text">${history.turnos.length} ${history.turnos.length === 1 ? 'turno' : 'turnos'} en la hoja · ${history.faltan.length ? `${history.faltan.length} sin traer` : 'ya está todo'}</strong></div>` : ''
-  ].join('');
+  let ans;
+  if (silent) {
+    if (!cambios && !hayHistorico) return;   // todo igual: ni un aviso
+    ans = { includeStock: false, includeHistory: hayHistorico };
+  } else {
+    const rowsHTML = [
+      importDiffRow('Usuarios', preview.users.length, d.users),
+      importDiffRow('Categorías', preview.categories.length, d.cats),
+      importDiffRow('Productos', preview.products.length, d.prods),
+      clubChanged ? `<div class="rep-row"><span>Nombre del club</span><strong class="wrap-text">${esc(preview.club.name)}</strong></div>` : '',
+      history ? `<div class="rep-row"><span>Histórico</span><strong class="wrap-text">${history.turnos.length} ${history.turnos.length === 1 ? 'turno' : 'turnos'} en la hoja · ${history.faltan.length ? `${history.faltan.length} sin traer` : 'ya está todo'}</strong></div>` : ''
+    ].join('');
+    ans = await importPreviewDialog({
+      rowsHTML,
+      removed: [...d.users.removed, ...d.cats.removed, ...d.prods.removed],
+      hasOpenTurn: !!turn,
+      hoja: payload.hoja,
+      // Sin nada que traer, la casilla solo estorbaría.
+      history: hayHistorico ? { turnosNuevos: history.faltan.length, movimientosTotal: history.movimientosTotal } : null
+    });
+    if (!ans) return;
+  }
 
-  const ans = await importPreviewDialog({
-    rowsHTML,
-    removed: [...d.users.removed, ...d.cats.removed, ...d.prods.removed],
-    hasOpenTurn: !!turn,
-    hoja: payload.hoja,
-    // Sin nada que traer, la casilla solo estorbaría.
-    history: history && (history.faltan.length || history.movimientosTotal)
-      ? { turnosNuevos: history.faltan.length, movimientosTotal: history.movimientosTotal }
-      : null
-  });
-  if (!ans) return;
-
-  // Las validaciones no dependen de las existencias, así que esta segunda conversión no puede
-  // fallar si la primera ha pasado.
-  const next = ans.includeStock ? configFromSheet(payload, { includeStock: true, soldUnits }) : preview;
-  Object.assign(config.club, next.club);
-  Object.assign(config.settings, next.settings);
-  config.users = next.users;
-  config.categories = next.categories;
-  config.products = next.products;
-  saveConfig(); applyBranding();
+  // En automático, si la configuración está igual no se reescribe: así una apertura de la app que
+  // solo trae histórico no vuelve a guardar ni a subir un catálogo idéntico.
+  let aplicada = null;
+  if (cambios || !silent) {
+    // Las validaciones no dependen de las existencias, así que esta segunda conversión no puede
+    // fallar si la primera ha pasado.
+    aplicada = ans.includeStock ? configFromSheet(payload, { includeStock: true, soldUnits }) : preview;
+    Object.assign(config.club, aplicada.club);
+    Object.assign(config.settings, aplicada.settings);
+    config.users = aplicada.users;
+    config.categories = aplicada.categories;
+    config.products = aplicada.products;
+    saveConfig(); applyBranding();
+  }
 
   let hist = null;
   if (ans.includeHistory && history) {
     try {
-      hist = await importHistory(history, next);
+      hist = await importHistory(history, aplicada || config);
     } catch (e) {
       syncState.progress = ''; renderSyncStatus();
       toast(`El histórico se quedó a medias: ${e.message}. Vuelve a pulsar «Actualizar desde la hoja» para seguir donde iba.`, 'error', 8000);
     }
   }
-  renderAdmin();
 
-  const resumen = `${next.users.length} usuarios, ${next.categories.length} categorías y ${next.products.length} productos`;
-  toast(`Actualizado desde la hoja: ${resumen}${hist ? ` · ${hist.turnos} turnos, ${hist.tickets} tickets y ${hist.movs} movimientos` : ''}`, 'success', 5000);
+  // La pantalla que esté a la vista puede haberse quedado antigua: en el arranque es la de acceso,
+  // y sus tarjetas son justo la lista de usuarios que acaba de cambiar.
+  const vista = document.body.dataset.view;
+  if (vista === 'admin') renderAdmin();
+  else if (vista === 'login') renderLogin();
+
+  /*
+   * El aviso cuenta cosas distintas según el modo: en manual, los totales que han quedado (el detalle
+   * acaba de verse en el diálogo); en automático, solo lo que ha cambiado, que es justo lo que el
+   * usuario no sabía. Si no ha cambiado nada y el histórico se quedó a medias no se dice nada:
+   * el error ya se ha avisado y un «Actualizado» a secas sería engañoso.
+   */
+  const partes = [];
+  if (silent) {
+    const n = (dif) => dif.added + dif.changed + dif.removed.length;
+    const plural = (c, uno, varios) => `${c} ${c === 1 ? uno : varios}`;
+    const trozos = [];
+    if (n(d.users)) trozos.push(plural(n(d.users), 'usuario', 'usuarios'));
+    if (n(d.cats)) trozos.push(plural(n(d.cats), 'categoría', 'categorías'));
+    if (n(d.prods)) trozos.push(plural(n(d.prods), 'producto', 'productos'));
+    if (clubChanged || settingsChanged) trozos.push('ajustes del club');
+    if (trozos.length) partes.push(trozos.join(', '));
+  } else {
+    partes.push(`${config.users.length} usuarios, ${config.categories.length} categorías y ${config.products.length} productos`);
+  }
+  if (hist) partes.push(`${hist.turnos} turnos, ${hist.tickets} tickets y ${hist.movs} movimientos`);
+  if (partes.length) toast(`Actualizado desde la hoja: ${partes.join(' · ')}`, 'success', 5000);
   if (hist && hist.problems.length) {
-    await alertDialog('Histórico importado, con avisos',
-      `Los turnos se han guardado, pero hay filas de la hoja que conviene revisar:<br><br>${hist.problems.map((x) => `• ${esc(x)}`).join('<br>')}`);
+    if (silent) {
+      toast(`El histórico ha entrado con ${hist.problems.length} ${hist.problems.length === 1 ? 'aviso' : 'avisos'}: pulsa «Actualizar desde la hoja» en Administración para ver el detalle.`, 'warn', 8000);
+    } else {
+      await alertDialog('Histórico importado, con avisos',
+        `Los turnos se han guardado, pero hay filas de la hoja que conviene revisar:<br><br>${hist.problems.map((x) => `• ${esc(x)}`).join('<br>')}`);
+    }
   }
 
   // Se devuelve el resultado a la hoja para que recoja lo que la app haya resuelto por su cuenta
   // (ids nuevos de las filas sin ID y las existencias ya fusionadas).
-  await syncEnqueueCatalog();
-  syncFlush();
-};
+  if (aplicada) { await syncEnqueueCatalog(); syncFlush(); }
+}
+
+ACTIONS['cloud-fetch-config'] = () => sheetImport();
 
 ACTIONS['cloud-send-history'] = async () => {
   if (!syncEnabled()) { toast('Activa y guarda primero la conexión', 'warn'); return; }
