@@ -4,8 +4,8 @@ Terminal punto de venta para el bar del club, pensado para una **tablet Android 
 No tiene servidor propio ni base de datos: es una web estática (HTML, CSS y JavaScript sin dependencias)
 que se instala como aplicación y funciona **sin conexión** una vez cargada. Opcionalmente envía los
 cierres, el catálogo y el inventario a una **hoja de Google Sheets** mediante un script gratuito de Apps Script.
-Esa misma hoja sirve para **gestionar la configuración** (productos, categorías, usuarios y ajustes) y traérsela
-a la tablet con un botón.
+Esa misma hoja sirve para **gestionar la configuración** (productos, categorías, usuarios y ajustes) y para
+**recuperar el histórico** en una tablet nueva, todo con un botón.
 
 ## Qué hace
 
@@ -30,6 +30,8 @@ a la tablet con un botón.
 - **Configuración desde la hoja**: se puede editar el catálogo, las categorías, los usuarios y los ajustes del club
   en el Excel y traerlo todo a la tablet con «Actualizar desde la hoja». Es la forma cómoda de mantener varias
   tablets con la misma configuración.
+- **Histórico desde la hoja**: esa misma actualización puede traerse de vuelta los turnos cerrados, sus tickets y
+  los movimientos de inventario, para dejar como estaba una tablet nueva o a la que se le hayan borrado los datos.
 - **Administración**: productos, categorías, inventario, usuarios, nombre y logo del club, ajustes, Google Sheets
   (envío y actualización desde la hoja) y copias de seguridad.
 - **Sin IVA**: los precios son netos y finales; no se calculan bases imponibles ni impuestos.
@@ -157,14 +159,44 @@ Después, en la tablet: *Administración → Google Sheets → **📥 Actualizar
 > entrar en el TPV como cualquiera. No lo compartas con enlace público y que el PIN de administrador —que nunca
 > sale de la tablet— sea distinto de todos ellos.
 
+### Recuperar el histórico desde la hoja
+
+Si una tablet se rompe, se le borran los datos de Chrome o se sustituye por otra, los turnos cerrados siguen
+estando en la hoja. La misma acción **📥 Actualizar desde la hoja** los devuelve a la app: en el resumen aparece
+una fila *Histórico* con cuántos turnos hay en la hoja y cuántos faltan en la tablet, y una **casilla —desmarcada
+por defecto—** para traerlos junto con sus tickets y los movimientos de inventario.
+
+- **Solo se añade lo que falte**, emparejando por ID de turno. Un turno que ya esté en la tablet **no se modifica**,
+  no se borra nada y el **turno abierto no se toca**. Volver a pulsar no duplica nada, así que si la descarga se
+  corta a medias basta con repetirla: continúa por donde iba.
+- Va **desmarcada por defecto** porque una temporada son decenas de miles de filas de tickets y tarda un rato.
+  Sin marcarla, actualizar la configuración va igual de rápido que siempre.
+- La hoja solo tiene los cierres que se **enviaron con éxito**: un turno cerrado sin conexión sigue esperando en la
+  cola de la tablet y no está en el Excel. Por eso nunca se reemplaza el histórico local con el de la hoja.
+- Lo que la hoja no guarda **se recupera por el nombre**, contra el catálogo y los usuarios que se acaban de
+  importar: el vendedor de cada ticket, el producto, la categoría y su emoji. Si alguien ya no está en la lista de
+  usuarios, sus tickets quedan agrupados aparte con su nombre, sin mezclarse con los de otra persona.
+- El **contador de tickets** se sube al número más alto que venga de la hoja, para que los tickets nuevos de una
+  tablet recién restaurada no repitan números ya usados.
+- Si a la hoja **Tickets** le faltan filas (alguien las borró a mano), el turno se importa igual y la app avisa de
+  la diferencia entre el «Recaudado» de la hoja y lo que suman sus tickets. Al revés que con la configuración, aquí
+  un problema **no cancela la importación**: recuperar 40 turnos de 42 es mejor que ninguno.
+- Los informes de los turnos recuperados se recalculan desde sus tickets, así que el cuadre, «Por persona», «Por
+  producto» y los CSV salen igual que en la tablet original.
+
 ### Cómo funciona por dentro
 
 - La app guarda cada envío en una cola local (IndexedDB) y lo manda con un `POST` al script cuando hay red.
   Si la tablet está sin conexión, el icono ☁️ de la barra de ventas muestra los pendientes y se reintenta al
   abrir la app, al recuperar la red, cada 5 minutos o al tocar el icono.
 - El script es **idempotente**: reenviar un cierre o un movimiento ya guardado no duplica filas.
-- «Actualizar desde la hoja» no usa la cola: es una consulta directa (`GET …/exec?token=…&accion=config`) que
-  devuelve las cuatro pestañas de configuración y no cambia nada en la tablet hasta que se confirma.
+- «Actualizar desde la hoja» no usa la cola: son consultas directas (`GET …/exec?token=…&accion=…`) y no cambian
+  nada en la tablet hasta que se confirma. Hay cuatro: `accion=config` devuelve las cuatro pestañas de
+  configuración; `accion=turnos`, solo los totales de cada cierre, que es lo justo para saber qué turnos faltan
+  sin descargar nada gordo; `accion=tickets&turnos=id1,id2`, las líneas de esos cierres y de ninguno más (en
+  lotes de cinco turnos); y `accion=inventario&desde=&limite=`, los movimientos por páginas de 500.
+- El histórico se guarda **lote a lote** en IndexedDB con `put` por ID: nunca se borra nada, así que importar dos
+  veces deja lo mismo. Y no se reenvía a la hoja: viene de ella, ya está allí.
 - La URL del script funciona como dirección pública y el **token** como contraseña. Nadie ve la hoja salvo
   con quien la compartas desde Drive.
 - Sin conexión el TPV sigue vendiendo con normalidad; la nube es solo la copia.
@@ -196,8 +228,10 @@ Copias fuera de la tablet:
   misma u otra tablet.
 
 Avisos: si se borran los datos de Chrome, se desinstala la app o se pierde la tablet, se pierden los datos
-locales. Dos tablets no comparten turnos ni tickets entre sí (la configuración sí, a través de la hoja de Google). Si el histórico no se pudiera guardar en IndexedDB, el cierre
-se guarda en `tpv.archive_fallback` (localStorage) y la app avisa.
+locales; con la sincronización activada se pueden recuperar desde la hoja (*Actualizar desde la hoja*, marcando la
+casilla del histórico), pero solo los cierres que llegaron a subir. Dos tablets no trabajan sobre el mismo turno:
+cada una tiene el suyo y sus tickets, y solo se juntan al pasar por la hoja de Google. Si el histórico no se
+pudiera guardar en IndexedDB, el cierre se guarda en `tpv.archive_fallback` (localStorage) y la app avisa.
 
 ## Actualizar la app
 
@@ -215,7 +249,7 @@ js/utils.js               utilidades (importes, fechas, CSV, compartir, registro
 js/storage.js             localStorage + IndexedDB
 js/ui.js                  modales, teclado numérico, PIN y avisos
 js/report.js              cálculo del informe, texto para compartir y CSV
-js/sync.js                cola y envío a Google Sheets, y actualización de la configuración desde la hoja
+js/sync.js                cola y envío a Google Sheets, y vuelta de la configuración y del histórico desde la hoja
 js/admin.js               pantalla de administración
 js/app.js                 flujo principal: acceso, turno, ventas, cobro, cierre, inventario e histórico
 sw.js                     service worker (modo sin conexión)

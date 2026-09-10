@@ -126,27 +126,36 @@ async function syncTest(url, token) {
 
 /* ---------- Configuración de vuelta: hoja → app ---------- */
 
-/** Descarga lo que hay en las hojas de configuración (usuarios, categorías, catálogo y ajustes). */
-async function syncFetchConfig() {
+/** Consulta de lectura al script. Mismos avisos de error que syncTest, para no tener dos idiomas. */
+async function syncGet(params, timeoutMs = 30000) {
   const cfg = syncCfg();
   if (!cfg.url) throw new Error('Activa y guarda primero la conexión con Google Sheets');
+  const qs = Object.keys(params).map((k) => `${k}=${encodeURIComponent(params[k])}`).join('&');
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 30000);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const url = `${cfg.url}${cfg.url.includes('?') ? '&' : '?'}token=${encodeURIComponent(cfg.token)}&accion=config`;
+    const url = `${cfg.url}${cfg.url.includes('?') ? '&' : '?'}token=${encodeURIComponent(cfg.token)}&${qs}`;
     const r = await fetch(url, { redirect: 'follow', signal: ctrl.signal });
     const text = await r.text();
     let data;
     try { data = JSON.parse(text); }
     catch (e) { throw new Error('La URL no responde como el script del TPV. Revisa la publicación como aplicación web.'); }
     if (!data.ok) throw new Error(data.error === 'token' ? 'Token incorrecto' : (data.error || 'Error en el script'));
-    if (!data.productos) throw new Error('El script de la hoja es una versión antigua: no sabe devolver la configuración. Vuelve a pegar Code.gs y a implementar la aplicación web.');
     return data;
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('Tiempo de espera agotado');
     if (e instanceof TypeError) throw new Error('No se pudo conectar con el script. Comprueba la conexión a internet y la URL.');
     throw e;
   } finally { clearTimeout(timer); }
+}
+
+const SCRIPT_ANTIGUO = 'El script de la hoja es una versión antigua: no sabe devolver esos datos. Vuelve a pegar Code.gs y a implementar la aplicación web.';
+
+/** Descarga lo que hay en las hojas de configuración (usuarios, categorías, catálogo y ajustes). */
+async function syncFetchConfig() {
+  const data = await syncGet({ accion: 'config' });
+  if (!data.productos) throw new Error(SCRIPT_ANTIGUO);
+  return data;
 }
 
 /** Nombres comparables: sin espacios de sobra, sin mayúsculas y sin tildes. */
@@ -279,6 +288,150 @@ function configFromSheet(payload, { includeStock = false, soldUnits = {} } = {})
   }
 
   return { club, settings, users, categories, products };
+}
+
+/* ---------- Histórico de vuelta: hoja → app ---------- */
+
+/*
+ * Las hojas Turnos, Tickets e Inventario son un registro contable, no configuración: se piden
+ * aparte y por partes, porque una temporada son cientos de turnos y decenas de miles de líneas.
+ * Primero los agregados (baratos, para saber qué turnos faltan) y solo después los tickets de esos.
+ */
+
+/** Agregados de todos los cierres que hay en la hoja, sin sus tickets. */
+async function syncFetchTurns() {
+  const data = await syncGet({ accion: 'turnos' });
+  if (!Array.isArray(data.turnos)) throw new Error(SCRIPT_ANTIGUO);
+  return data;
+}
+
+/** Líneas de ticket de unos turnos concretos (nunca la hoja entera). */
+const syncFetchTickets = (ids) => syncGet({ accion: 'tickets', turnos: ids.join(',') }, 60000);
+
+/** Una página de movimientos de inventario. Devuelve { movimientos, total, siguiente }. */
+const syncFetchStockMoves = (desde = 0, limite = 500) => syncGet({ accion: 'inventario', desde, limite }, 60000);
+
+/*
+ * Reconstruye turnos cerrados y sus tickets a partir de lo que devuelven esas consultas.
+ * Función pura: recibe en `cfg` la configuración ya aplicada solo para resolver por nombre lo que la
+ * hoja no guarda, y no toca ni `config` ni la base de datos.
+ *
+ * La hoja está hecha para que la lea una persona, así que hay campos que no viajan. Los que nadie
+ * lee (openedBy/closedBy, voidedAt) se quedan a null; los que sí se leen se recuperan por nombre:
+ * el vendedor de cada ticket, porque computeReport agrupa «Por persona» por userId, y el producto y
+ * la categoría de cada línea, para que el informe por producto no se parta.
+ *
+ * Al contrario que configFromSheet, los problemas NO abortan: aquí nada se reemplaza, solo se añade,
+ * y recuperar 40 turnos de 42 es mejor que ninguno. Se devuelven para poder avisar.
+ */
+function historyFromSheet(sheetTurns, sheetLines, cfg) {
+  const problems = [];
+  const userByName = new Map(((cfg && cfg.users) || []).map((u) => [normName(u.name), u]));
+  const prodByName = new Map(((cfg && cfg.products) || []).map((p) => [normName(p.name), p]));
+  const catsById = new Map(((cfg && cfg.categories) || []).map((c) => [c.id, c]));
+  const catsByName = new Map(((cfg && cfg.categories) || []).map((c) => [normName(c.name), c]));
+
+  // Un vendedor que ya no esté en la lista de usuarios necesita igualmente un id propio: si todos
+  // se quedaran sin él, computeReport los juntaría a todos en un mismo grupo.
+  const userIdOf = (name) => {
+    const n = normName(name);
+    if (!n) return null;
+    const u = userByName.get(n);
+    return u ? u.id : `usr-${n}`;
+  };
+
+  // --- Tickets: cada fila de la hoja es una línea; se agrupan por «ID ticket» ---
+  const byTicket = new Map();
+  let maxTicketN = 0;
+  let sinTurno = 0;
+  (sheetLines || []).forEach((l) => {
+    const turnId = String(l.turno ?? '').trim();
+    if (!turnId) { sinTurno++; return; }
+    const key = String(l.ticket ?? '').trim() || `${turnId}#${l.n}`;
+    let tk = byTicket.get(key);
+    if (!tk) {
+      tk = {
+        id: String(l.ticket ?? '').trim() || uid('k'),
+        n: l.n || 0, turnId, ts: l.fecha || null,
+        userId: userIdOf(l.vendedor), userName: String(l.vendedor ?? '').trim(),
+        lines: [], total: l.totalTicket ?? 0, paid: l.entregado ?? 0, change: l.cambio ?? 0,
+        voided: !!l.anulado
+      };
+      byTicket.set(key, tk);
+      if (tk.n > maxTicketN) maxTicketN = tk.n;
+    }
+    // La categoría se toma del producto cuando se ha reconocido: dos productos pueden llamarse
+    // igual en categorías distintas, y el producto es la referencia más fiable de las dos.
+    const prod = prodByName.get(normName(l.producto));
+    const cat = (prod && catsById.get(prod.categoryId)) || catsByName.get(normName(l.categoria));
+    tk.lines.push({
+      productId: prod ? prod.id : null,
+      name: String(l.producto ?? '').trim(),
+      emoji: (prod && prod.emoji) || (cat && cat.emoji) || '',
+      categoryId: cat ? cat.id : null,
+      categoryName: String(l.categoria ?? '').trim(),
+      unitPrice: l.precioUnitario ?? 0,
+      qty: l.cantidad || 0,
+      invitation: !!l.invitacion
+    });
+  });
+  if (sinTurno) problems.push(`Tickets: ${sinTurno} ${sinTurno === 1 ? 'fila' : 'filas'} sin ID de turno, sin importar.`);
+
+  const ticketsByTurn = new Map();
+  byTicket.forEach((tk) => {
+    const arr = ticketsByTurn.get(tk.turnId);
+    if (arr) arr.push(tk); else ticketsByTurn.set(tk.turnId, [tk]);
+  });
+
+  // --- Turnos: misma forma que produce finalizeClose, para que el histórico no note la diferencia ---
+  const turns = [];
+  const tickets = [];
+  (sheetTurns || []).forEach((t) => {
+    const id = String(t.id ?? '').trim();
+    if (!id) { problems.push('Turnos: hay una fila sin ID de turno, sin importar.'); return; }
+    if (!t.cierre) { problems.push(`Turnos: la fila «${id}» no tiene fecha de cierre, sin importar.`); return; }
+    const own = (ticketsByTurn.get(id) || []).sort((a, b) => (a.ts || 0) - (b.ts || 0) || a.n - b.n);
+
+    // El informe del histórico se recalcula desde los tickets, así que si a la hoja «Tickets» le
+    // faltan filas la cifra que vería el socio no sería la de la hoja «Turnos». Se importa igual,
+    // pero avisando: los datos de la hoja son los que hay.
+    const suma = own.reduce((n, k) => n + (k.voided ? 0 : (k.total || 0)), 0);
+    if ((t.recaudado ?? 0) !== suma) {
+      problems.push(`Turno del ${fmtDate(t.apertura || t.cierre)}: la hoja «Turnos» dice ${eur(t.recaudado ?? 0)} y sus tickets suman ${eur(suma)}. Se ha importado; revisa si falta alguna fila en «Tickets».`);
+    }
+
+    turns.push({
+      id,
+      openedAt: t.apertura || null, openedBy: userIdOf(t.abiertoPor), openedByName: String(t.abiertoPor ?? '').trim(),
+      closedAt: t.cierre, closedBy: userIdOf(t.cerradoPor), closedByName: String(t.cerradoPor ?? '').trim(),
+      openingCash: t.saldoInicial ?? 0,
+      countedCash: t.efectivoContado ?? null, leftInDrawer: t.quedaEnCaja ?? null, withdrawn: t.retirado ?? null,
+      salesTotal: t.recaudado ?? 0, ticketsCount: t.tickets || 0, items: t.articulos || 0,
+      expectedCash: t.efectivoEsperado ?? 0, difference: t.diferencia ?? null,
+      invitationsUnits: t.invitacionesUds || 0, invitationsValue: t.invitacionesValor ?? 0,
+      voidedCount: t.ticketsAnulados || 0, voidedAmount: t.importeAnulado ?? 0
+    });
+    own.forEach((k) => tickets.push(k));
+  });
+
+  return { turns, tickets, maxTicketN, problems };
+}
+
+/** Movimientos de inventario de la hoja, con el producto resuelto por nombre. */
+function stockMovesFromSheet(sheetMoves, cfg) {
+  const userByName = new Map(((cfg && cfg.users) || []).map((u) => [normName(u.name), u]));
+  const prodByName = new Map(((cfg && cfg.products) || []).map((p) => [normName(p.name), p]));
+  return (sheetMoves || []).filter((m) => m && String(m.id ?? '').trim()).map((m) => {
+    const prod = prodByName.get(normName(m.producto));
+    const user = userByName.get(normName(m.quien));
+    return {
+      id: String(m.id).trim(), ts: m.fecha || null, turnId: String(m.turno ?? '').trim() || null,
+      productId: prod ? prod.id : null, name: String(m.producto ?? '').trim(),
+      type: m.tipo || 'ajuste', qty: m.cantidad || 0, stockAfter: m.stockDespues ?? null,
+      userId: user ? user.id : null, userName: String(m.quien ?? '').trim(),
+      note: String(m.nota ?? '').trim()
+    };
+  });
 }
 
 /** Envía la cola pendiente. Devuelve { ok | skipped | empty | offline | busy | error, pending }. */

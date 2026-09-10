@@ -477,7 +477,7 @@ function renderAdminCloud(body) {
       <section class="rep-card">
         <h4>Conexión con Google Sheets</h4>
         <p class="muted">Cada cierre se envía con sus tickets a una hoja de cálculo de tu Google Drive, junto con el catálogo, los usuarios, los ajustes y el inventario. El script guarda además un JSON por cierre en una carpeta de Drive. Sin conexión, todo queda en cola y se envía después.</p>
-        <p class="muted small">La hoja también sirve para <strong>gestionar la configuración</strong>: edita las pestañas Catálogo, Categorías, Usuarios y Ajustes y pulsa «Actualizar desde la hoja». Como los PIN quedan escritos ahí, no compartas el documento con enlace público.</p>
+        <p class="muted small">La hoja también sirve para <strong>gestionar la configuración</strong>: edita las pestañas Catálogo, Categorías, Usuarios y Ajustes y pulsa «Actualizar desde la hoja». Esa misma actualización puede recuperar el <strong>histórico</strong> que ya esté en la hoja (turnos, tickets e inventario), útil para poner al día una tablet nueva. Como los PIN quedan escritos ahí, no compartas el documento con enlace público.</p>
         <form class="form" id="cloud-form" autocomplete="off">
           <label class="check"><input type="checkbox" name="enabled" ${s.enabled ? 'checked' : ''}> Enviar automáticamente a Google Sheets</label>
           <div class="field"><label>URL de la aplicación web <span class="muted">(termina en /exec)</span></label><input name="url" type="url" inputmode="url" value="${esc(s.url || '')}" placeholder="https://script.google.com/macros/s/…/exec"></div>
@@ -587,11 +587,17 @@ function importDiffRow(label, total, d) {
   return `<div class="rep-row ${d.removed.length ? 'diff bad' : ''}"><span>${label}</span><strong class="wrap-text">${bits.join(' · ')}</strong></div>`;
 }
 
+/** Texto de la casilla del histórico: solo menciona lo que de verdad hay que traer. */
+const historyCheckLabel = (h) => [
+  h.turnosNuevos ? `${h.turnosNuevos} ${h.turnosNuevos === 1 ? 'turno nuevo con sus tickets' : 'turnos nuevos con sus tickets'}` : '',
+  h.movimientosTotal ? `${h.movimientosTotal} movimientos de inventario` : ''
+].filter(Boolean).join(' y ');
+
 /**
- * Confirmación de la importación: resumen de cambios y casilla de existencias.
- * Resuelve { includeStock } si se acepta y null si se cancela o se cierra el modal.
+ * Confirmación de la importación: resumen de cambios y casillas de existencias e histórico.
+ * Resuelve { includeStock, includeHistory } si se acepta y null si se cancela o se cierra el modal.
  */
-function importPreviewDialog({ rowsHTML, removed, hasOpenTurn, hoja }) {
+function importPreviewDialog({ rowsHTML, removed, hasOpenTurn, hoja, history }) {
   return new Promise((res) => {
     let answered = false;
     const finish = (v) => { if (!answered) { answered = true; res(v); } };
@@ -605,6 +611,8 @@ function importPreviewDialog({ rowsHTML, removed, hasOpenTurn, hoja }) {
         <p class="muted small">${hasOpenTurn
         ? 'Hay un turno abierto: a las existencias de la hoja se les restará lo que ya se ha vendido en él.'
         : 'Si no la marcas se conservan las existencias de esta tablet, que suelen estar más al día que la hoja.'}</p>
+        ${history ? `<label class="check"><input type="checkbox" name="historico"> Traer también el histórico (${historyCheckLabel(history)})</label>
+        <p class="muted small">El histórico solo se añade: los turnos que ya tienes en la tablet no se modifican y el turno abierto no se toca. Puede tardar un rato.</p>` : ''}
         <div class="row row-end">
           <button type="button" class="btn" data-action="m-close">Cancelar</button>
           <button type="submit" class="btn btn-primary">Actualizar</button>
@@ -612,11 +620,57 @@ function importPreviewDialog({ rowsHTML, removed, hasOpenTurn, hoja }) {
       </form>`, { cls: 'modal-form', onClose: () => finish(null) });
     m.addEventListener('submit', (e) => {
       e.preventDefault();
-      const includeStock = !!new FormData(e.target).get('stock');
-      finish({ includeStock });
+      const fd = new FormData(e.target);
+      finish({ includeStock: !!fd.get('stock'), includeHistory: !!fd.get('historico') });
       closeModal(m);
     });
   });
+}
+
+/*
+ * Trae de la hoja los turnos que la tablet no tiene, sus tickets y los movimientos de inventario.
+ * Va por lotes y guarda cada uno por separado: TPVDB.importAll hace upsert por id y no borra nada,
+ * así que si un lote falla lo ya importado se queda dentro y volver a pulsar continúa por donde iba.
+ */
+async function importHistory(history, cfg) {
+  const ids = history.faltan.map((t) => t.id);
+  const byId = new Map(history.turnos.map((t) => [t.id, t]));
+  const problems = [];
+  let turnos = 0, tickets = 0, movs = 0, maxTicketN = 0;
+
+  // Lotes de 5 turnos, como los que usa syncSendAllHistory para el viaje de ida.
+  for (let i = 0; i < ids.length; i += 5) {
+    const lote = ids.slice(i, i + 5);
+    syncState.progress = `Turnos: ${i} de ${ids.length}`; renderSyncStatus();
+    const res = await syncFetchTickets(lote);
+    const h = historyFromSheet(lote.map((id) => byId.get(id)), res.lineas || [], cfg);
+    await TPVDB.importAll(h.turns, h.tickets, []);
+    turnos += h.turns.length; tickets += h.tickets.length;
+    if (h.maxTicketN > maxTicketN) maxTicketN = h.maxTicketN;
+    problems.push(...h.problems);
+  }
+
+  // Los movimientos no se piden por turno: hay reposiciones y recuentos que no pertenecen a ninguno.
+  // Se pagina la hoja entera y se dejan fuera los que la tablet ya tiene.
+  if (history.movimientosTotal) {
+    const known = new Set((await TPVDB.getStockMoves(0)).map((m) => m.id));
+    let desde = 0;
+    while (desde != null) {
+      syncState.progress = `Inventario: ${desde} de ${history.movimientosTotal}`; renderSyncStatus();
+      const res = await syncFetchStockMoves(desde);
+      const nuevos = stockMovesFromSheet(res.movimientos, cfg).filter((m) => !known.has(m.id));
+      if (nuevos.length) { await TPVDB.importAll([], [], nuevos); movs += nuevos.length; }
+      // Solo se sigue si la página avanza de verdad, para no dar vueltas si el script responde raro.
+      desde = (typeof res.siguiente === 'number' && res.siguiente > desde) ? res.siguiente : null;
+    }
+  }
+
+  // El contador de tickets es de cada dispositivo: en una tablet recién restaurada está a cero y
+  // los tickets nuevos repetirían números que ya están en el histórico recuperado.
+  if (maxTicketN > (config.ticketCounter || 0)) { config.ticketCounter = maxTicketN; saveConfig(); }
+
+  syncState.progress = ''; renderSyncStatus();
+  return { turnos, tickets, movs, problems };
 }
 
 ACTIONS['cloud-fetch-config'] = async () => {
@@ -631,6 +685,15 @@ ACTIONS['cloud-fetch-config'] = async () => {
     syncState.progress = ''; syncState.lastError = e.message; persistSyncState(); renderSyncStatus();
     toast(`No se pudo descargar: ${e.message}`, 'error', 7000);
     return;
+  }
+  // Los agregados del histórico son baratos y hacen falta para enseñar de antemano cuántos turnos
+  // faltan. Si esta consulta falla no se cancela nada: la configuración es lo urgente y sigue.
+  let sheetTurns = null;
+  try {
+    syncState.progress = 'Consultando el histórico…'; renderSyncStatus();
+    sheetTurns = await syncFetchTurns();
+  } catch (e) {
+    toast(`No se pudo consultar el histórico de la hoja: ${e.message}`, 'warn', 6000);
   }
   syncState.progress = ''; renderSyncStatus();
 
@@ -652,18 +715,35 @@ ACTIONS['cloud-fetch-config'] = async () => {
     prods: importDiff(config.products, preview.products, ['name', 'price', 'categoryId', 'emoji', 'active', 'order'])
   };
   const clubChanged = preview.club.name !== config.club.name || (preview.club.subtitle || '') !== (config.club.subtitle || '');
+
+  let history = null;
+  if (sheetTurns) {
+    const localIds = new Set((await TPVDB.getTurns()).map((t) => t.id));
+    const enLaHoja = sheetTurns.turnos.filter((t) => t.id);
+    history = {
+      turnos: enLaHoja,
+      faltan: enLaHoja.filter((t) => !localIds.has(t.id)),
+      movimientosTotal: sheetTurns.movimientosTotal || 0
+    };
+  }
+
   const rowsHTML = [
     importDiffRow('Usuarios', preview.users.length, d.users),
     importDiffRow('Categorías', preview.categories.length, d.cats),
     importDiffRow('Productos', preview.products.length, d.prods),
-    clubChanged ? `<div class="rep-row"><span>Nombre del club</span><strong class="wrap-text">${esc(preview.club.name)}</strong></div>` : ''
+    clubChanged ? `<div class="rep-row"><span>Nombre del club</span><strong class="wrap-text">${esc(preview.club.name)}</strong></div>` : '',
+    history ? `<div class="rep-row"><span>Histórico</span><strong class="wrap-text">${history.turnos.length} ${history.turnos.length === 1 ? 'turno' : 'turnos'} en la hoja · ${history.faltan.length ? `${history.faltan.length} sin traer` : 'ya está todo'}</strong></div>` : ''
   ].join('');
 
   const ans = await importPreviewDialog({
     rowsHTML,
     removed: [...d.users.removed, ...d.cats.removed, ...d.prods.removed],
     hasOpenTurn: !!turn,
-    hoja: payload.hoja
+    hoja: payload.hoja,
+    // Sin nada que traer, la casilla solo estorbaría.
+    history: history && (history.faltan.length || history.movimientosTotal)
+      ? { turnosNuevos: history.faltan.length, movimientosTotal: history.movimientosTotal }
+      : null
   });
   if (!ans) return;
 
@@ -675,8 +755,25 @@ ACTIONS['cloud-fetch-config'] = async () => {
   config.users = next.users;
   config.categories = next.categories;
   config.products = next.products;
-  saveConfig(); applyBranding(); renderAdmin();
-  toast(`Actualizado desde la hoja: ${next.users.length} usuarios, ${next.categories.length} categorías y ${next.products.length} productos`, 'success', 5000);
+  saveConfig(); applyBranding();
+
+  let hist = null;
+  if (ans.includeHistory && history) {
+    try {
+      hist = await importHistory(history, next);
+    } catch (e) {
+      syncState.progress = ''; renderSyncStatus();
+      toast(`El histórico se quedó a medias: ${e.message}. Vuelve a pulsar «Actualizar desde la hoja» para seguir donde iba.`, 'error', 8000);
+    }
+  }
+  renderAdmin();
+
+  const resumen = `${next.users.length} usuarios, ${next.categories.length} categorías y ${next.products.length} productos`;
+  toast(`Actualizado desde la hoja: ${resumen}${hist ? ` · ${hist.turnos} turnos, ${hist.tickets} tickets y ${hist.movs} movimientos` : ''}`, 'success', 5000);
+  if (hist && hist.problems.length) {
+    await alertDialog('Histórico importado, con avisos',
+      `Los turnos se han guardado, pero hay filas de la hoja que conviene revisar:<br><br>${hist.problems.map((x) => `• ${esc(x)}`).join('<br>')}`);
+  }
 
   // Se devuelve el resultado a la hoja para que recoja lo que la app haya resuelto por su cuenta
   // (ids nuevos de las filas sin ID y las existencias ya fusionadas).

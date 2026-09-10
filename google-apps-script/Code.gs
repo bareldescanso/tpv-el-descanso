@@ -10,7 +10,12 @@
  *
  * La configuración viaja en los dos sentidos: las hojas Catálogo, Categorías, Usuarios y Ajustes
  * se pueden editar a mano y la app se las trae con «Actualizar desde la hoja», que consulta
- * ?token=…&accion=config (ver getConfig_ al final del archivo).
+ * ?token=…&accion=config (ver getConfig_).
+ *
+ * Esa misma actualización puede recuperar el histórico ya guardado en la hoja (para restaurar una
+ * tablet nueva), con tres consultas más: accion=turnos (los agregados de cada cierre),
+ * accion=tickets&turnos=id1,id2 (las líneas de esos cierres) y accion=inventario&desde=&limite=
+ * (los movimientos, por páginas). La app solo añade lo que no tenga: nunca reemplaza.
  *
  * INSTALACIÓN
  *  1. Crea una hoja de cálculo en Google Sheets.
@@ -73,12 +78,23 @@ var SHEETS = {
 
 var MOVE_TYPES = { venta: 'Ventas del turno', reposicion: 'Reposición', ajuste: 'Ajuste / recuento' };
 
+// La hoja guarda la etiqueta ('Ventas del turno'); al leerla hay que recuperar la clave ('venta').
+// Se deriva del objeto de arriba para que no puedan desincronizarse.
+var MOVE_TYPES_INV = (function () {
+  var inv = {};
+  Object.keys(MOVE_TYPES).forEach(function (k) { inv[MOVE_TYPES[k]] = k; });
+  return inv;
+})();
+
 /* ---------- Puntos de entrada ---------- */
 
 function doGet(e) {
   var p = (e && e.parameter) || {};
   if (p.token !== TOKEN) return json_({ ok: false, error: 'token' });
   if (p.accion === 'config') return json_(getConfig_());
+  if (p.accion === 'turnos') return json_(getTurnos_());
+  if (p.accion === 'tickets') return json_(getTickets_(p.turnos));
+  if (p.accion === 'inventario') return json_(getInventario_(p.desde, p.limite));
   return json_({ ok: true, hoja: SpreadsheetApp.getActive().getName(), hora: new Date().toISOString() });
 }
 
@@ -269,6 +285,110 @@ function int_(v) {
 function pin_(v) {
   var s = txt_(v);
   return (s && s.length < 4 && /^\d+$/.test(s)) ? ('0000' + s).slice(-4) : s;
+}
+
+/* ---------- Histórico de vuelta: hoja → app ---------- */
+
+/*
+ * Las hojas Turnos, Tickets e Inventario son un registro contable de solo añadir, así que se leen
+ * aparte de la configuración y por páginas: una temporada son cientos de turnos y decenas de miles
+ * de filas de tickets, y no tendría sentido descargarlas cada vez que alguien cambia un precio.
+ *
+ * getTurnos_ devuelve solo los agregados de cada cierre, que es lo que la app necesita para saber
+ * qué turnos le faltan antes de pedir nada gordo.
+ */
+function getTurnos_() {
+  return {
+    ok: true,
+    generadoEn: Date.now(),
+    hoja: SpreadsheetApp.getActive().getName(),
+    // Para avisar en la app de que además hay movimientos de inventario que traer.
+    movimientosTotal: Math.max(0, sheet_(SHEETS.inventario).getLastRow() - 1),
+    turnos: rows_(SHEETS.turnos).map(function (r) {
+      return {
+        id: txt_(r[0]), apertura: ms_(r[1]), abiertoPor: txt_(r[2]), cierre: ms_(r[3]), cerradoPor: txt_(r[4]),
+        saldoInicial: cents_(r[5]), tickets: int_(r[6]) || 0, articulos: int_(r[7]) || 0,
+        recaudado: cents_(r[8]), efectivoEsperado: cents_(r[9]), efectivoContado: cents_(r[10]),
+        diferencia: cents_(r[11]), quedaEnCaja: cents_(r[12]), retirado: cents_(r[13]),
+        invitacionesUds: int_(r[14]) || 0, invitacionesValor: cents_(r[15]),
+        ticketsAnulados: int_(r[16]) || 0, importeAnulado: cents_(r[17])
+      };
+    })
+  };
+}
+
+/*
+ * Líneas de ticket de los turnos pedidos, y solo de esos: sin el parámetro devuelve error en vez de
+ * la hoja entera. saveCierre_ escribe de golpe las filas de cada cierre, así que las de un turno
+ * quedan seguidas; se localiza el bloque leyendo una sola vez la columna del ID y después se lee
+ * únicamente ese tramo.
+ */
+function getTickets_(idsCSV) {
+  var ids = String(idsCSV || '').split(',').map(function (x) { return x.trim(); }).filter(String);
+  if (!ids.length) return { ok: false, error: 'Falta el parámetro «turnos» con los ID separados por comas' };
+
+  var def = SHEETS.tickets;
+  var sh = sheet_(def);
+  var last = sh.getLastRow();
+  var lineas = [];
+  if (last >= 2) {
+    var want = {};
+    ids.forEach(function (id) { want[id] = true; });
+    var col = sh.getRange(2, 1, last - 1, 1).getValues();
+    var min = -1, max = -1;
+    for (var i = 0; i < col.length; i++) {
+      if (want[String(col[i][0]).trim()]) { if (min < 0) min = i; max = i; }
+    }
+    if (min >= 0) {
+      sh.getRange(min + 2, 1, max - min + 1, def.headers.length).getValues().forEach(function (r) {
+        if (!want[txt_(r[0])]) return;   // por si entre medias hay filas de otro turno
+        lineas.push({
+          turno: txt_(r[0]), n: int_(r[1]), fecha: ms_(r[2]), vendedor: txt_(r[4]),
+          producto: txt_(r[5]), categoria: txt_(r[6]), cantidad: int_(r[7]) || 0,
+          precioUnitario: cents_(r[8]), invitacion: bool_(r[10]), anulado: bool_(r[11]),
+          totalTicket: cents_(r[12]), entregado: cents_(r[13]), cambio: cents_(r[14]), ticket: txt_(r[15])
+        });
+      });
+    }
+  }
+  return { ok: true, generadoEn: Date.now(), turnos: ids, lineas: lineas };
+}
+
+/** Movimientos de inventario por páginas: `desde` es la fila (0 = la primera con datos). */
+function getInventario_(desde, limite) {
+  var def = SHEETS.inventario;
+  var sh = sheet_(def);
+  var total = Math.max(0, sh.getLastRow() - 1);
+  var from = Math.max(0, int_(desde) || 0);
+  var size = int_(limite);
+  if (!size || size < 1 || size > 2000) size = 500;
+  var n = Math.min(size, total - from);
+
+  var movimientos = [];
+  if (n > 0) {
+    sh.getRange(from + 2, 1, n, def.headers.length).getValues().forEach(function (r) {
+      if (r.join('').trim() === '') return;
+      movimientos.push({
+        fecha: ms_(r[0]), producto: txt_(r[1]), tipo: MOVE_TYPES_INV[txt_(r[2])] || txt_(r[2]),
+        cantidad: int_(r[3]) || 0, stockDespues: int_(r[4]), quien: txt_(r[5]),
+        turno: txt_(r[6]), nota: txt_(r[7]), id: txt_(r[8])
+      });
+    });
+  }
+  // `siguiente` se calcula sobre las filas pedidas, no sobre las devueltas: si en medio hay alguna
+  // en blanco, la paginación no se queda atascada en ella.
+  return {
+    ok: true, generadoEn: Date.now(), total: total, desde: from,
+    siguiente: from + n < total ? from + n : null, movimientos: movimientos
+  };
+}
+
+/** Fecha de la hoja → milisegundos. Sheets devuelve un Date con su hora aunque solo muestre el día. */
+function ms_(v) {
+  if (v instanceof Date) return v.getTime();
+  if (v === '' || v == null) return null;
+  var t = new Date(v).getTime();
+  return isNaN(t) ? null : t;
 }
 
 /* ---------- Utilidades ---------- */
