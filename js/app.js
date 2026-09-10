@@ -1,7 +1,7 @@
 /* TPV El Descanso — lógica principal: pantallas, ticket, cobro, cierre e histórico. */
 'use strict';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.5.1';
 const DENOMS = [50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50, 20, 10, 5, 2, 1];
 
 /* ---------- Estado ---------- */
@@ -853,10 +853,28 @@ async function checkSheet() {
  * Al leer la hoja se aplica lo que traiga y se vuelve a poner en la cola un catálogo nuevo (ya
  * fusionado), que es el que sube en el último envío.
  */
+/*
+ * La primera vez en cada arranque —y justo después de un alta con enlace— es cuando la app está
+ * vacía o desfasada de verdad, y es la que va con la cortina de carga puesta: si no, la pantalla de
+ * acceso parece cargada mientras aún no hay ni usuarios. Las comprobaciones de después (cada pocos
+ * minutos, al volver a la app, al recuperar la red) son silenciosas: tapar la pantalla a alguien
+ * que está sirviendo sería peor que no decir nada.
+ */
+let primeraSync = true;
+
 async function flushAndCheck() {
-  await syncFlush({ skipCatalog: true });
-  await checkSheet();
-  await syncFlush();
+  const conCortina = primeraSync && syncEnabled() && navigator.onLine;
+  if (conCortina) { primeraSync = false; showLoader('Conectando con la hoja del club…'); }
+  try {
+    if (syncState.pending) loaderStep('Enviando lo que quedaba pendiente…');
+    await syncFlush({ skipCatalog: true });
+    loaderStep('Comprobando la hoja del club…');
+    await checkSheet();
+    loaderStep('Devolviendo la configuración a la hoja…');
+    await syncFlush();
+  } finally {
+    if (conCortina) hideLoader();
+  }
 }
 
 /* ---------- Alta desde un enlace o un QR ---------- */
@@ -901,6 +919,7 @@ async function confirmEnroll(alta) {
   applyEnroll(alta);
   toast('Conectada a la hoja nueva', 'success', 5000);
   sheetCheckedAt = 0;
+  primeraSync = true;      // hoja nueva: toca descargarlo todo, y eso sí se tapa
   flushAndCheck();
 }
 

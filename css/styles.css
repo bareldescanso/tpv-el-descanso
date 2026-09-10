@@ -190,6 +190,24 @@ img { display: block; }
 .change-detail { font-size: 20px; opacity: .85; margin-bottom: 28px; }
 
 /* ---- Modales ---- */
+/* ===== Cortina de carga ===== */
+/* Por encima de los modales (50) y del cambio a devolver (80), por debajo de los avisos (100). */
+/* El fondo es --bg al 82 %, escrito a mano porque rgba() no acepta la variable. Si cambia la
+   paleta, cambia también aquí. */
+.loader { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: rgba(243, 239, 230, .82); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); animation: fadeIn .18s ease-out; }
+.loader-box { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; max-width: 520px; }
+.loader-logo { width: 96px; height: 96px; object-fit: contain; animation: spin 1.8s linear infinite; }
+.loader-msg { margin: 0; font-size: 22px; font-weight: 700; min-height: 1.3em; }
+.loader-step { margin: 0; font-size: 16px; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.3em; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes breathe { 50% { transform: scale(1.12); opacity: .75; } }
+/* Si el sistema pide poco movimiento, el logo late en vez de girar. */
+@media (prefers-reduced-motion: reduce) {
+  .loader { animation: none; }
+  .loader-logo { animation: breathe 1.6s ease-in-out infinite; }
+}
+
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; background: rgba(20, 30, 27, .55); display: flex; align-items: center; justify-content: center; padding: 16px; animation: fadeIn .12s ease-out; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes riseIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }

@@ -678,6 +678,17 @@ function importPreviewDialog({ rowsHTML, removed, hasOpenTurn, hoja, history }) 
  * Va por lotes y guarda cada uno por separado: TPVDB.importAll hace upsert por id y no borra nada,
  * así que si un lote falla lo ya importado se queda dentro y volver a pulsar continúa por donde iba.
  */
+/*
+ * Un solo sitio para el «por dónde va»: la tarjeta de Administración y, si está puesta, la cortina
+ * de carga (js/ui.js). En el arranque la tarjeta no se ve —la pantalla es la de acceso—, así que sin
+ * esto el progreso se lo contaría a nadie.
+ */
+function syncProgress(txt) {
+  syncState.progress = txt;
+  renderSyncStatus();
+  loaderStep(txt);
+}
+
 async function importHistory(history, cfg) {
   const ids = history.faltan.map((t) => t.id);
   const byId = new Map(history.turnos.map((t) => [t.id, t]));
@@ -687,7 +698,7 @@ async function importHistory(history, cfg) {
   // Lotes de 5 turnos, como los que usa syncSendAllHistory para el viaje de ida.
   for (let i = 0; i < ids.length; i += 5) {
     const lote = ids.slice(i, i + 5);
-    syncState.progress = `Turnos: ${i} de ${ids.length}`; renderSyncStatus();
+    syncProgress(`Turnos: ${i + 1}-${Math.min(i + 5, ids.length)} de ${ids.length}`);
     const res = await syncFetchTickets(lote);
     const h = historyFromSheet(lote.map((id) => byId.get(id)), res.lineas || [], cfg);
     await TPVDB.importAll(h.turns, h.tickets, []);
@@ -702,7 +713,7 @@ async function importHistory(history, cfg) {
     const known = new Set((await TPVDB.getStockMoves(0)).map((m) => m.id));
     let desde = 0;
     while (desde != null) {
-      syncState.progress = `Inventario: ${desde} de ${history.movimientosTotal}`; renderSyncStatus();
+      syncProgress(`Movimientos de inventario: ${desde} de ${history.movimientosTotal}`);
       const res = await syncFetchStockMoves(desde);
       const nuevos = stockMovesFromSheet(res.movimientos, cfg).filter((m) => !known.has(m.id));
       if (nuevos.length) { await TPVDB.importAll([], [], nuevos); movs += nuevos.length; }
@@ -715,7 +726,7 @@ async function importHistory(history, cfg) {
   // los tickets nuevos repetirían números que ya están en el histórico recuperado.
   if (maxTicketN > (config.ticketCounter || 0)) { config.ticketCounter = maxTicketN; saveConfig(); }
 
-  syncState.progress = ''; renderSyncStatus();
+  syncProgress('');
   return { turnos, tickets, movs, problems };
 }
 
@@ -736,12 +747,12 @@ async function sheetImport({ silent = false } = {}) {
   if (!syncEnabled()) { if (!silent) toast('Activa y guarda primero la conexión', 'warn'); return; }
   if (ticket.lines.length) { if (!silent) toast('Termina o vacía el ticket en curso antes de actualizar', 'warn', 4500); return; }
 
-  syncState.progress = 'Descargando la configuración…'; renderSyncStatus();
+  syncProgress('Descargando la configuración…');
   let payload;
   try {
     payload = await syncFetchConfig();
   } catch (e) {
-    syncState.progress = ''; syncState.lastError = e.message; persistSyncState(); renderSyncStatus();
+    syncState.lastError = e.message; persistSyncState(); syncProgress('');
     if (!silent) toast(`No se pudo descargar: ${e.message}`, 'error', 7000);
     else if (!e.offline) toast(`No se pudo leer la hoja: ${e.message}`, 'error', 8000);
     return;
@@ -750,12 +761,12 @@ async function sheetImport({ silent = false } = {}) {
   // consulta falla no se cancela nada: la configuración es lo urgente y sigue.
   let sheetTurns = null;
   try {
-    syncState.progress = 'Consultando el histórico…'; renderSyncStatus();
+    syncProgress('Consultando el histórico…');
     sheetTurns = await syncFetchTurns();
   } catch (e) {
     if (!silent) toast(`No se pudo consultar el histórico de la hoja: ${e.message}`, 'warn', 6000);
   }
-  syncState.progress = ''; renderSyncStatus();
+  syncProgress('');
 
   const soldUnits = soldUnitsInOpenTurn();
   // Se convierte primero sin existencias: sirve para validar y para el resumen, y es exactamente
@@ -847,11 +858,15 @@ async function sheetImport({ silent = false } = {}) {
 
   let hist = null;
   if (ans.includeHistory && history) {
+    // Con cortina también por el botón manual: son minutos, y por detrás se escribe en IndexedDB.
+    showLoader('Trayendo el histórico…');
     try {
       hist = await importHistory(history, aplicada || config);
     } catch (e) {
-      syncState.progress = ''; renderSyncStatus();
+      syncProgress('');
       toast(`El histórico se quedó a medias: ${e.message}. Vuelve a pulsar «Actualizar desde la hoja» para seguir donde iba.`, 'error', 8000);
+    } finally {
+      hideLoader();
     }
   }
 
@@ -905,12 +920,12 @@ ACTIONS['cloud-send-history'] = async () => {
   const ok = await confirmDialog({ title: 'Enviar todo el histórico', text: `Se enviarán ${turns.length} turnos con sus tickets, los movimientos de inventario y el catálogo. Lo que ya esté en la hoja no se duplica.`, ok: 'Enviar' });
   if (!ok) return;
   try {
-    syncState.progress = 'Preparando…'; renderSyncStatus();
-    const n = await syncSendAllHistory((d, t) => { syncState.progress = `${d} de ${t} turnos`; renderSyncStatus(); });
-    syncState.progress = ''; renderSyncStatus();
+    syncProgress('Preparando…');
+    const n = await syncSendAllHistory((d, t) => syncProgress(`${d} de ${t} turnos`));
+    syncProgress('');
     toast(`Histórico enviado: ${n} turnos`, 'success', 4000);
   } catch (e) {
-    syncState.progress = ''; syncState.lastError = e.message; persistSyncState(); renderSyncStatus();
+    syncState.lastError = e.message; persistSyncState(); syncProgress('');
     toast(`Error al enviar: ${e.message}`, 'error', 7000);
   }
 };

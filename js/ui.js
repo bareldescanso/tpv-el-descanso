@@ -1,6 +1,118 @@
 /* Componentes de interfaz reutilizables: modales, confirmaciones, avisos y teclado numérico. */
 'use strict';
 
+/* ---------- Cortina de carga ---------- */
+
+/*
+ * La primera lectura de la hoja tarda unos segundos —y traer un histórico entero, minutos—, y hasta
+ * que termina la pantalla de acceso está ahí con la lista de usuarios vacía o antigua: parece que la
+ * app ya ha cargado y no es verdad. Esta cortina lo tapa, gira el logo del club y va diciendo por
+ * dónde va. De paso impide tocar la pantalla mientras se aplica el catálogo, que es justo el momento
+ * en el que no conviene empezar una venta.
+ *
+ * Los mensajes de arriba son de relleno y van cambiando: sirven para que se vea que la cosa sigue
+ * viva. El de abajo es el de verdad («Turnos: 10 de 42»), y lo pone quien esté trabajando.
+ */
+const LOADER_MSGS = [
+  'Preguntando a la hoja de cálculo…',
+  'Contando las cañas de ayer…',
+  'Repasando quién pagó la última ronda…',
+  'Buscando las patatas en el almacén…',
+  'Cuadrando la caja con los dedos…',
+  'Sacando brillo a los vasos…',
+  'Despertando a Google, que estaba de siesta…',
+  'Ordenando el botellero por altura…',
+  'Comprobando que todavía queda hielo…',
+  'Poniendo el mantel bueno…',
+  'Apuntando las invitaciones en la libreta…',
+  'Afinando el grifo de la cerveza…',
+  'Haciendo sitio en la nevera…',
+  'Preguntando en la barra si falta algo…',
+  'Buscando el ticket que se llevó el aire…'
+];
+
+const loader = { depth: 0, step: '', desde: 0, revelar: null, rota: null, vigila: null, cola: [] };
+
+/* Los mensajes salen barajados y no se repite ninguno hasta que se hayan visto todos. */
+function loaderMsg() {
+  if (!loader.cola.length) {
+    loader.cola = LOADER_MSGS.slice();
+    for (let i = loader.cola.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [loader.cola[i], loader.cola[j]] = [loader.cola[j], loader.cola[i]];
+    }
+  }
+  return loader.cola.pop();
+}
+
+/*
+ * Se puede anidar (el arranque abre la cortina y la importación del histórico la abre otra vez):
+ * se cuenta cuántas veces se ha abierto y solo se quita con el último hideLoader.
+ */
+function showLoader(step = '') {
+  loader.depth++;
+  loader.step = step;
+  loaderPaint();
+  if (loader.depth > 1 || loader.revelar || loaderVisible()) return;
+  // Con un poco de retraso: una hoja pequeña se lee en medio segundo y ahí la cortina solo daría un parpadeo.
+  loader.revelar = setTimeout(() => {
+    loader.revelar = null;
+    const el = $('#loader');
+    if (!el) return;
+    const msg = $('#loader-msg');
+    if (msg) msg.textContent = loaderMsg();
+    loaderPaint();
+    el.classList.remove('hidden');
+    loader.desde = Date.now();
+    loader.rota = setInterval(() => { const m = $('#loader-msg'); if (m) m.textContent = loaderMsg(); }, 2600);
+    loaderWatch();
+  }, 400);
+}
+
+/** El texto de verdad. Si la cortina no está puesta no hace nada, así que se puede llamar siempre. */
+function loaderStep(step) {
+  if (!loader.depth) return;
+  loader.step = step;
+  loaderPaint();
+  loaderWatch();
+}
+
+function hideLoader() {
+  loader.depth = Math.max(0, loader.depth - 1);
+  if (loader.depth) return;
+  clearTimeout(loader.revelar); loader.revelar = null;
+  clearInterval(loader.rota); loader.rota = null;
+  clearTimeout(loader.vigila); loader.vigila = null;
+  const el = $('#loader');
+  if (!el || el.classList.contains('hidden')) return;
+  // Ya puesta, se queda un momento: quitarla a los 50 ms sería otro parpadeo.
+  const falta = 600 - (Date.now() - loader.desde);
+  if (falta > 0) setTimeout(() => { if (!loader.depth) el.classList.add('hidden'); }, falta);
+  else el.classList.add('hidden');
+}
+
+function loaderVisible() { const el = $('#loader'); return !!el && !el.classList.contains('hidden'); }
+
+function loaderPaint() {
+  const el = $('#loader-step');
+  if (el) el.textContent = loader.step;
+}
+
+/*
+ * Red de seguridad: si pasa un minuto sin que nadie diga por dónde va, se quita la cortina. Un fallo
+ * raro (o una petición que se queda colgada pese a su propio tiempo de espera) no puede dejar la
+ * tablet bloqueada en mitad del turno. El trabajo sigue por detrás; solo se deja de tapar.
+ */
+function loaderWatch() {
+  clearTimeout(loader.vigila);
+  loader.vigila = setTimeout(() => {
+    if (!loader.depth) return;
+    loader.depth = 0;
+    hideLoader();
+    toast('La hoja está tardando más de lo normal. Sigue intentándolo por detrás; puedes usar el TPV.', 'warn', 7000);
+  }, 60000);
+}
+
 /* ---------- Modales ---------- */
 
 function openModal(html, opts = {}) {

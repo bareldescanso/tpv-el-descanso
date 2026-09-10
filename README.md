@@ -262,6 +262,14 @@ distinto se aplica en el momento, sin preguntar, y solo aparece un aviso con lo 
   tablet](#dar-de-alta-otra-tablet-enlace-o-qr)); también se pueden pegar a mano en *Administración → Google Sheets*.
   A partir de ahí ya se actualiza sola, y de hecho el alta misma deja la tablet al día antes de la primera venta.
 
+- **La primera vez de cada arranque se tapa la pantalla** mientras se lee la hoja: el logo del club girando,
+  un mensaje de relleno que va cambiando y, debajo, por dónde va de verdad («Comprobando la hoja del club…»,
+  «Turnos: 6-10 de 42»). Sin eso la pantalla de acceso parece cargada cuando todavía no hay ni usuarios, y
+  alguien acabaría tecleando un PIN que aún no existe. Las **comprobaciones de después son silenciosas**: tapar
+  la pantalla a quien está sirviendo sería peor que no decir nada. Si la hoja se lee rápido la cortina no llega
+  a aparecer, y si tarda más de un minuto **sin dar señales** se quita sola avisando: la tablet nunca se queda
+  tapada. También se pone al traer el histórico con el botón manual, porque eso son minutos.
+
 El botón **📥 Actualizar desde la hoja** sigue estando para forzarlo en el momento, y es el único que enseña el
 resumen antes de aplicar y el que permite traer también las existencias.
 
@@ -290,6 +298,11 @@ resumen antes de aplicar y el que permite traer también las existencias.
 - `js/qr.js` es un generador de códigos QR escrito para esto: modo byte, corrección de errores nivel M,
   versiones 1 a 13 (hasta 331 caracteres) y la máscara elegida por las cuatro reglas de penalización del estándar.
   Son 300 líneas para no mandar el token a un servicio de QR ajeno.
+- La cortina de carga vive en `js/ui.js` (`showLoader`/`loaderStep`/`hideLoader`, con un contador de
+  anidamiento porque el arranque y la importación del histórico pueden pedirla a la vez). Quien decide **cuándo**
+  se ve es `flushAndCheck` en `js/app.js`, con una bandera `primeraSync` que solo vale para la primera
+  sincronización de cada arranque y para justo después de un alta con enlace. El texto real sale de
+  `syncProgress` (`js/admin.js`), que alimenta a la vez la tarjeta de *Administración* y la cortina.
 - Sin conexión el TPV sigue vendiendo con normalidad; la nube es solo la copia.
 
 ## Inventario
