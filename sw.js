@@ -4,12 +4,12 @@
  * local al instante y la refresca en segundo plano cuando hay red).
  * Al publicar una nueva versión, cambia VERSION para forzar la limpieza de la caché antigua.
  */
-const VERSION = 'v1.4.1';
+const VERSION = 'v1.5.0';
 const CACHE = `tpv-descanso-${VERSION}`;
 const ASSETS = [
   './', './index.html', './manifest.webmanifest',
   './css/styles.css',
-  './js/defaults.js', './js/utils.js', './js/storage.js', './js/ui.js', './js/report.js', './js/sync.js', './js/admin.js', './js/app.js',
+  './js/defaults.js', './js/utils.js', './js/storage.js', './js/ui.js', './js/report.js', './js/sync.js', './js/qr.js', './js/admin.js', './js/app.js',
   './icons/logo.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'
 ];
 

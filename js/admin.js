@@ -486,6 +486,12 @@ function renderAdminCloud(body) {
         </form>
       </section>
       <section class="rep-card">
+        <h4>Dar de alta otra tablet</h4>
+        <p class="muted">Genera un enlace con un código QR para que otra tablet, un móvil o un navegador queden conectados a esta misma hoja sin teclear la URL ni el token. Se abre una vez y ya arranca con los datos del club.</p>
+        <p class="muted small">Ese enlace <strong>lleva dentro el token</strong>, así que es la contraseña de la hoja: enséñalo en pantalla para escanearlo, no lo mandes por un grupo.</p>
+        <div class="row wrap"><button class="btn" data-action="cloud-enroll">📱 Generar enlace de alta</button></div>
+      </section>
+      <section class="rep-card">
         <h4>Estado de la sincronización</h4>
         <div id="sync-status"></div>
         <div class="row wrap">
@@ -551,6 +557,46 @@ ACTIONS['cloud-test'] = async (b) => {
   } catch (e) { toast(`Sin conexión: ${e.message}`, 'error', 7000); }
 };
 ACTIONS['cloud-toggle'] = (cb) => { config.sync[cb.dataset.key] = cb.checked; saveConfig(); };
+/*
+ * Enlace de alta: el QR se dibuja aquí, en la tablet (js/qr.js). Ni el enlace ni el token salen del
+ * dispositivo: mandarlos a un servicio de códigos QR de internet sería regalar la contraseña de la hoja.
+ * Tampoco se ofrece «Compartir»: el sitio de este enlace es la pantalla de la tablet o el portapapeles
+ * de quien lo está pegando, no un chat de grupo.
+ */
+ACTIONS['cloud-enroll'] = () => {
+  if (!config.sync.url || !config.sync.token) {
+    toast('Guarda primero la URL y el token de la hoja', 'warn', 5000);
+    return;
+  }
+  const enlace = enrollLink();
+  const m = openModal(`
+    <h3 class="modal-title">Dar de alta otra tablet</h3>
+    <p class="modal-text">Escanea este código con la tablet nueva —o pégale el enlace en Chrome— y quedará conectada a la hoja del club. Solo hay que hacerlo una vez.</p>
+    <div class="qr-box" id="enroll-qr"></div>
+    <div class="field"><label>Enlace de alta</label><textarea id="enroll-link" class="enroll-link" rows="3" readonly>${esc(enlace)}</textarea></div>
+    <p class="muted small">⚠️ El enlace <strong>lleva el token dentro</strong>: es la contraseña de la hoja. Si se te escapa, cambia el <code>TOKEN</code> del script (Implementar → Gestionar implementaciones → ✎ → Versión: Nueva) y genera uno nuevo.</p>
+    <p class="muted small">El <strong>PIN de administrador</strong> no viaja en el enlace: en la tablet nueva sigue siendo el de fábrica hasta que lo cambies a mano.</p>
+    <div class="row row-end">
+      <button type="button" class="btn" id="enroll-copy">📋 Copiar enlace</button>
+      <button type="button" class="btn btn-primary" data-action="m-close">Cerrar</button>
+    </div>`, { wide: true });
+
+  const caja = $('#enroll-qr', m);
+  const lienzo = QR.canvas(enlace, { scale: 6 });
+  if (lienzo) caja.appendChild(lienzo);
+  else caja.innerHTML = '<p class="muted small">La URL del script es demasiado larga para el código: copia el enlace y pégalo en la tablet nueva.</p>';
+
+  $('#enroll-copy', m).addEventListener('click', async () => {
+    const campo = $('#enroll-link', m);
+    try {
+      await navigator.clipboard.writeText(enlace);
+      toast('Enlace copiado', 'success');
+    } catch (e) {
+      campo.focus(); campo.select();          // sin permiso de portapapeles, al menos queda seleccionado
+      toast('Copia el enlace a mano (ya está seleccionado)', 'warn', 6000);
+    }
+  });
+};
 ACTIONS['cloud-send-catalog'] = async () => {
   if (!syncEnabled()) { toast('Activa y guarda primero la conexión', 'warn'); return; }
   await syncEnqueueCatalog();

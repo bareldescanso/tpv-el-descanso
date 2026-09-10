@@ -124,6 +124,82 @@ async function syncTest(url, token) {
   } finally { clearTimeout(timer); }
 }
 
+/* ---------- Enlace de alta: dar de alta otra tablet sin teclear nada ---------- */
+
+/*
+ * La dirección del script y el token no pueden ir en el código: el repositorio es público y quien
+ * los tuviera podría leer la hoja —donde están los PIN— y reescribir las pestañas de configuración.
+ * Así que viajan en un enlace que se genera desde una tablet ya configurada:
+ *
+ *   https://…/tpv-el-descanso/#tpv=<base64url del JSON {i|u, t}>
+ *
+ * Va en el FRAGMENTO (lo que hay después de #) a propósito: el navegador no lo envía al servidor,
+ * así que no queda en los registros de GitHub Pages ni se filtra por la cabecera Referer. La app lo
+ * lee, lo guarda y lo borra de la barra de direcciones (ver readEnrollHash en app.js).
+ *
+ * El enlace es, a todos los efectos, la contraseña de la hoja: se pasa en mano o por privado, y si
+ * se escapa se cambia el TOKEN del script y se genera otro.
+ */
+
+const ENROLL_PREFIX = 'https://script.google.com/macros/s/';
+const ENROLL_SUFFIX = '/exec';
+
+/* base64url sin relleno: aguanta ir dentro de una URL y que alguien la copie y la pegue. */
+function b64urlEncode(txt) {
+  let bin = '';
+  new TextEncoder().encode(txt).forEach((b) => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function b64urlDecode(s) {
+  const bin = atob(String(s).replace(/-/g, '+').replace(/_/g, '/'));
+  return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+}
+
+/*
+ * De la conexión guardada al texto del enlace. La URL habitual de Apps Script es larguísima y
+ * siempre con la misma forma, así que se guarda solo el identificador de la implementación (`i`) y
+ * el QR sale bastante más pequeño. Si la URL tiene otra forma (por ejemplo la de un dominio de
+ * Google Workspace) se guarda entera en `u`.
+ */
+function enrollPayload(sync) {
+  const url = String((sync && sync.url) || '');
+  const o = (url.startsWith(ENROLL_PREFIX) && url.endsWith(ENROLL_SUFFIX))
+    ? { i: url.slice(ENROLL_PREFIX.length, url.length - ENROLL_SUFFIX.length) }
+    : { u: url };
+  o.t = String((sync && sync.token) || '');
+  return b64urlEncode(JSON.stringify(o));
+}
+
+/*
+ * El camino de vuelta, y aquí toca desconfiar: un enlace puede llegar de cualquiera. Solo se acepta
+ * https, solo hacia script.google.com y solo terminando en /exec, para que un enlace ajeno no pueda
+ * desviar los cierres del club a otro sitio. Quien necesite otra dirección la escribe a mano en
+ * Administración. El identificador se comprueba aparte: sin barras ni puntos, porque un `i` con
+ * «../» se colaría por la validación del servidor al normalizar la ruta la propia URL.
+ */
+function enrollParse(payload) {
+  let o;
+  try { o = JSON.parse(b64urlDecode(String(payload).trim())); }
+  catch (e) { return null; }
+  if (!o || typeof o !== 'object') return null;
+  let url;
+  if (o.i) {
+    if (!/^[A-Za-z0-9_-]{10,200}$/.test(String(o.i))) return null;
+    url = ENROLL_PREFIX + String(o.i) + ENROLL_SUFFIX;
+  } else url = String(o.u || '');
+  let dir;
+  try { dir = new URL(url); } catch (e) { return null; }
+  if (dir.protocol !== 'https:' || dir.hostname !== 'script.google.com') return null;
+  if (!dir.pathname.endsWith(ENROLL_SUFFIX) || dir.search || dir.hash) return null;
+  return { url: dir.href, token: String(o.t || '') };
+}
+
+/** El enlace completo, apuntando a esta misma copia de la app. */
+function enrollLink() {
+  const base = location.origin + location.pathname.replace(/index\.html$/, '');
+  return `${base}#tpv=${enrollPayload(syncCfg())}`;
+}
+
 /* ---------- Configuración de vuelta: hoja → app ---------- */
 
 /*

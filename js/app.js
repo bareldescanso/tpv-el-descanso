@@ -1,7 +1,7 @@
 /* TPV El Descanso — lógica principal: pantallas, ticket, cobro, cierre e histórico. */
 'use strict';
 
-const APP_VERSION = '1.4.1';
+const APP_VERSION = '1.5.0';
 const DENOMS = [50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50, 20, 10, 5, 2, 1];
 
 /* ---------- Estado ---------- */
@@ -859,10 +859,65 @@ async function flushAndCheck() {
   await syncFlush();
 }
 
+/* ---------- Alta desde un enlace o un QR ---------- */
+
+/*
+ * Lee el enlace de alta (…/#tpv=…) y lo borra de la barra de direcciones en cuanto lo ha leído: no
+ * hace falta que el token se quede en el historial de Chrome ni a la vista en la lista de pestañas.
+ * Devuelve { url, token } o null. Ver el bloque del enlace de alta en sync.js.
+ */
+function readEnrollHash() {
+  const m = /^#tpv=(.+)$/.exec(location.hash || '');
+  if (!m) return null;
+  history.replaceState(null, '', location.pathname + location.search);
+  const alta = enrollParse(m[1]);
+  if (!alta) { toast('El enlace de alta no es válido o está incompleto', 'error', 7000); return null; }
+  return alta;
+}
+
+function applyEnroll(alta) {
+  config.sync.url = alta.url;
+  config.sync.token = alta.token;
+  config.sync.enabled = true;
+  saveConfig();
+  updateSyncBadge();
+}
+
+/*
+ * Cambiar de hoja una tablet que ya estaba trabajando sí se pregunta, y con el PIN de
+ * administrador: si no, bastaría con colarle un enlace a alguien para que sus cierres acabasen en
+ * otra hoja y su lista de usuarios la marcase un desconocido. En una tablet recién puesta no hay
+ * nada que perder, y ahí se aplica directamente (es justo el caso para el que existe el enlace).
+ */
+async function confirmEnroll(alta) {
+  const ok = await confirmDialog({
+    title: 'Cambiar la hoja de esta tablet',
+    text: 'El enlace que has abierto apunta a una hoja de cálculo <strong>distinta</strong> de la que tiene configurada esta tablet. Si continúas, los próximos cierres se enviarán allí y la configuración vendrá de esa hoja.',
+    ok: 'Cambiar de hoja', danger: true
+  });
+  if (!ok) return;
+  const pin = await askPin({ title: 'PIN de administrador', subtitle: 'Para cambiar la hoja', validate: (v) => v === config.adminPin });
+  if (!pin) return;
+  applyEnroll(alta);
+  toast('Conectada a la hoja nueva', 'success', 5000);
+  sheetCheckedAt = 0;
+  flushAndCheck();
+}
+
 function init() {
   loadConfig();
   turn = lsLoad(LS_TURN, null);
   if (turn && !Array.isArray(turn.tickets)) turn.tickets = [];
+  // El alta se aplica antes del primer flushAndCheck(), para que la tablet nueva ya arranque al día.
+  const alta = readEnrollHash();
+  let altaPendiente = null, altaAviso = null;
+  if (alta) {
+    if (!config.sync.url) { applyEnroll(alta); altaAviso = ['Conectada a la hoja del club', 'success']; }
+    else if (alta.url === config.sync.url && alta.token === config.sync.token) {
+      altaAviso = syncEnabled() ? ['Esta tablet ya estaba conectada a esa hoja', 'info'] : ['Envío a la hoja reactivado', 'success'];
+      applyEnroll(alta);
+    } else altaPendiente = alta;      // otra hoja: se pregunta con el PIN, ya con la app en marcha
+  }
   applyBranding();
   $('#app-version').textContent = `v${APP_VERSION}`;
   TPVDB.open().catch((e) => console.error('IndexedDB no disponible', e));
@@ -870,7 +925,9 @@ function init() {
   registerSW();
   loadSyncState();
   showView('login');
+  if (altaAviso) toast(altaAviso[0], altaAviso[1], 5000);
   flushAndCheck();
+  if (altaPendiente) confirmEnroll(altaPendiente);
   window.addEventListener('online', flushAndCheck);
   setInterval(flushAndCheck, 5 * 60 * 1000);
 }

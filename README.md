@@ -27,6 +27,8 @@ Esa misma hoja sirve para **gestionar la configuración** (productos, categoría
 - **Google Sheets**: envío automático de cierres, tickets, catálogo, usuarios, ajustes e inventario a una hoja de
   cálculo de tu Drive, con cola de reintentos si no hay conexión. El script deja además un JSON por cierre en una
   carpeta de Drive.
+- **Alta de otra tablet con un QR**: desde una tablet ya conectada se genera un enlace con su código
+  para que otra tablet, un móvil o un navegador queden apuntando a la misma hoja sin teclear nada.
 - **Configuración desde la hoja**: se puede editar el catálogo, las categorías, los usuarios y los ajustes del club
   en el Excel y traerlo todo a la tablet con «Actualizar desde la hoja». Es la forma cómoda de mantener varias
   tablets con la misma configuración.
@@ -123,6 +125,51 @@ Todo ocurre entre la tablet y tu cuenta de Google: no hay ningún servidor inter
 Si más adelante cambias el código o el token: *Implementar → Gestionar implementaciones → ✎ →
 Versión: Nueva → Implementar*. Así la URL no cambia.
 
+### Dar de alta otra tablet (enlace o QR)
+
+Ese paso 5 solo hay que hacerlo **una vez**. Para la segunda tablet, el móvil de alguien o el
+navegador del ordenador, en una tablet ya conectada: *Administración → Google Sheets →
+**📱 Generar enlace de alta***. Sale un código QR con un enlace de esta forma:
+
+```text
+https://TU_USUARIO.github.io/tpv-el-descanso/#tpv=eyJpIjoi…
+```
+
+Se escanea con la cámara del dispositivo nuevo (o se pega el enlace en Chrome) y al abrirse queda
+conectado a la hoja del club: descarga la configuración y el histórico que falte y empieza a
+funcionar. No hay que copiar la URL ni el token a mano.
+
+- **El QR se dibuja en la propia tablet** ([`js/qr.js`](js/qr.js)), sin internet y sin ningún
+  servicio de códigos QR: ese enlace lleva la contraseña de la hoja y no puede salir del dispositivo.
+- La URL y el token viajan en el **fragmento** (lo que va después de `#`). Los navegadores **no
+  envían el fragmento al servidor**, así que no queda en los registros de GitHub Pages ni se escapa
+  por la cabecera `Referer`. La app lo lee, lo guarda y lo **borra de la barra de direcciones**.
+- Solo se aceptan enlaces `https` hacia `script.google.com` terminados en `/exec`: un enlace ajeno
+  no puede desviar los cierres del club a otro servidor.
+- En una tablet **recién puesta** se aplica sin preguntar (no hay nada que perder). Si la tablet ya
+  estaba trabajando con **otra hoja**, se pide confirmación **y el PIN de administrador**: si no,
+  bastaría con colarle un enlace a alguien para que sus cierres acabasen en otro sitio.
+- El **PIN de administrador no viaja** en el enlace. En la tablet nueva sigue siendo el de fábrica
+  (`1234`) hasta que se cambie a mano.
+
+> ⚠️ **El enlace de alta es la contraseña de la hoja.** Enséñalo en pantalla para escanearlo o
+> pégalo tú en el dispositivo; no lo mandes a un grupo de WhatsApp, no lo pegues en un correo a
+> varios y no lo subas al repositorio (que es público).
+
+#### Si el enlace o el token se escapan
+
+Cambiar el token es la única forma de revocar el acceso, y se hace en dos minutos:
+
+1. Apps Script → cambia el valor de `var TOKEN = '…'` por otra clave larga.
+2. *Implementar → Gestionar implementaciones → ✎ → Versión: **Nueva** → Implementar*.
+   Así la URL sigue siendo la misma y solo cambia la contraseña.
+3. En una tablet: *Administración → Google Sheets*, pega el token nuevo y **Guardar**.
+4. Desde ella, **📱 Generar enlace de alta** y vuelve a dar de alta las demás con el código nuevo.
+
+Las tablets que sigan con el token viejo dejan de subir y de actualizarse, y avisan del error en
+*Administración → Google Sheets*; sus turnos pendientes **no se pierden**: se quedan en la cola y
+suben en cuanto se les ponga el token nuevo.
+
 ### Qué llega a la hoja
 
 | Pestaña | Contenido | Cuándo |
@@ -210,8 +257,10 @@ distinto se aplica en el momento, sin preguntar, y solo aparece un aviso con lo 
   nada** y se avisa de que hay datos que corregir; el detalle está en *Administración → Google Sheets*.
 - Los **turnos que falten** se traen en la misma comprobación, con sus tickets y los movimientos de inventario,
   con las mismas reglas del apartado anterior: solo se añade lo que no esté.
-- En una tablet nueva hay que pegar **una vez** la URL y el token en *Administración → Google Sheets*: no van en el
-  código, porque el repositorio es público. A partir de ahí ya se actualiza sola.
+- La URL y el token **no van en el código** (el repositorio es público), así que una tablet nueva hay que conectarla
+  una vez: lo más rápido es el **enlace o el QR de alta** de otra tablet (ver [Dar de alta otra
+  tablet](#dar-de-alta-otra-tablet-enlace-o-qr)); también se pueden pegar a mano en *Administración → Google Sheets*.
+  A partir de ahí ya se actualiza sola, y de hecho el alta misma deja la tablet al día antes de la primera venta.
 
 El botón **📥 Actualizar desde la hoja** sigue estando para forzarlo en el momento, y es el único que enseña el
 resumen antes de aplicar y el que permite traer también las existencias.
@@ -234,6 +283,13 @@ resumen antes de aplicar y el que permite traer también las existencias.
   veces deja lo mismo. Y no se reenvía a la hoja: viene de ella, ya está allí.
 - La URL del script funciona como dirección pública y el **token** como contraseña. Nadie ve la hoja salvo
   con quien la compartas desde Drive.
+- El **enlace de alta** es ese par (URL + token) en base64url dentro del fragmento `#tpv=`. `enrollPayload`
+  guarda solo el identificador de la implementación cuando la URL tiene la forma habitual, para que el código QR
+  salga más pequeño; `enrollParse` es la parte desconfiada (https, `script.google.com`, `/exec`, identificador sin
+  barras ni puntos) y `readEnrollHash` lo aplica y limpia la barra de direcciones con `history.replaceState`.
+- `js/qr.js` es un generador de códigos QR escrito para esto: modo byte, corrección de errores nivel M,
+  versiones 1 a 13 (hasta 331 caracteres) y la máscara elegida por las cuatro reglas de penalización del estándar.
+  Son 300 líneas para no mandar el token a un servicio de QR ajeno.
 - Sin conexión el TPV sigue vendiendo con normalidad; la nube es solo la copia.
 
 ## Inventario
@@ -285,6 +341,7 @@ js/storage.js             localStorage + IndexedDB
 js/ui.js                  modales, teclado numérico, PIN y avisos
 js/report.js              cálculo del informe, texto para compartir y CSV
 js/sync.js                cola y envío a Google Sheets, y vuelta de la configuración y del histórico desde la hoja
+js/qr.js                  generador de códigos QR (para el enlace de alta, sin salir del dispositivo)
 js/admin.js               pantalla de administración
 js/app.js                 flujo principal: acceso, turno, ventas, cobro, cierre, inventario e histórico
 sw.js                     service worker (modo sin conexión)
