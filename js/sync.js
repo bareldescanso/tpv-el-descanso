@@ -445,12 +445,23 @@ function stockMovesFromSheet(sheetMoves, cfg) {
   });
 }
 
-/** Envía la cola pendiente. Devuelve { ok | skipped | empty | offline | busy | error, pending }. */
-async function syncFlush({ manual = false } = {}) {
+/*
+ * Envía la cola pendiente. Devuelve { ok | skipped | empty | offline | busy | error, pending }.
+ *
+ * `skipCatalog` deja los catálogos en la cola y manda solo los hechos (cierres y movimientos). Lo
+ * usa el arranque: el catálogo REESCRIBE las pestañas de configuración, así que enviarlo antes de
+ * leer la hoja borraría lo que alguien haya editado a mano en el Excel. Los cierres y los
+ * movimientos solo añaden filas, así que esos pueden subir cuando sea.
+ */
+async function syncFlush({ manual = false, skipCatalog = false } = {}) {
   if (!syncEnabled()) return { skipped: true };
   if (syncState.running) return { busy: true };
-  let queue = await TPVDB.queueAll();
-  if (!queue.length) { await refreshSyncPending(); return { empty: true, pending: 0 }; }
+  const pendientes = async () => {
+    const q = await TPVDB.queueAll();
+    return skipCatalog ? q.filter((e) => e.type !== 'catalogo') : q;
+  };
+  let queue = await pendientes();
+  if (!queue.length) { await refreshSyncPending(); return { empty: true, pending: syncState.pending }; }
   if (!navigator.onLine && !manual) return { offline: true, pending: queue.length };
   syncState.running = true; syncState.lastAttempt = Date.now(); updateSyncBadge();
   try {
@@ -462,12 +473,12 @@ async function syncFlush({ manual = false } = {}) {
       if (saved.length) await TPVDB.queueDelete(saved);
       if (res.errors && res.errors.length) throw new Error(res.errors.map((x) => x.error).join(' · '));
       if (!saved.length) throw new Error('El script no confirmó ningún evento');
-      queue = await TPVDB.queueAll();
+      queue = await pendientes();
     }
     syncState.lastOk = Date.now(); syncState.lastError = null;
     persistSyncState();
     await refreshSyncPending();
-    return { ok: true, pending: 0 };
+    return { ok: true, pending: syncState.pending };
   } catch (e) {
     syncState.lastError = e.message || String(e);
     persistSyncState();

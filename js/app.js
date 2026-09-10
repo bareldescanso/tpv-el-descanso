@@ -1,7 +1,7 @@
 /* TPV El Descanso — lógica principal: pantallas, ticket, cobro, cierre e histórico. */
 'use strict';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 const DENOMS = [50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50, 20, 10, 5, 2, 1];
 
 /* ---------- Estado ---------- */
@@ -767,7 +767,9 @@ async function requestWakeLock() {
   } catch (e) { /* no disponible */ }
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && session.user && !wakeLock) requestWakeLock();
+  if (document.visibilityState !== 'visible') return;
+  if (session.user && !wakeLock) requestWakeLock();
+  flushAndCheck();
 });
 
 /* ---------- Service worker (modo offline / instalable) ---------- */
@@ -816,28 +818,45 @@ window.addEventListener('beforeunload', (e) => {
 
 /* ---------- Arranque ---------- */
 
-let sheetChecked = false;
+/*
+ * Cada cuánto se vuelve a mirar la hoja. En una tablet la app casi nunca se cierra de verdad: se
+ * queda en segundo plano, así que «una vez al arrancar» no bastaba. Se comprueba al abrirla, al
+ * volver a ella, al recuperar la red y cada pocos minutos, con esta espera de por medio para no
+ * consultar dos veces por lo mismo.
+ */
+const SHEET_CHECK_EVERY = 2 * 60 * 1000;
+let sheetCheckedAt = 0;
+let sheetChecking = false;
 
 /*
- * Comprobación de la hoja al abrir la app: si el Excel trae algo distinto se aplica sin preguntar
- * (ver sheetImport en admin.js). Se hace una sola vez por sesión.
- *
- * El orden importa: primero se vacía la cola y solo después se lee la hoja. Al revés, un catálogo
- * pendiente de subir llegaría a la hoja después de haberla leído y la lectura lo desharía; por eso
- * mismo, si queda algo pendiente de enviar, la comprobación se deja para la próxima. Sin conexión
- * tampoco se intenta: se reintenta al recuperar la red.
+ * Comprobación de la hoja: si el Excel trae algo distinto se aplica sin preguntar (ver sheetImport
+ * en admin.js). No se hace con un ticket a medias: cambiar precios debajo de una venta en curso
+ * sería peor que esperar. Sin conexión tampoco se intenta; se reintenta al recuperar la red.
  */
-async function checkSheetOnStart() {
-  if (sheetChecked || !syncEnabled() || !navigator.onLine) return;
-  if (syncState.pending || ticket.lines.length) return;
-  sheetChecked = true;
+async function checkSheet() {
+  if (sheetChecking || !syncEnabled() || !navigator.onLine) return;
+  if (ticket.lines.length) return;
+  if (Date.now() - sheetCheckedAt < SHEET_CHECK_EVERY) return;
+  sheetChecking = true;
   try { await sheetImport({ silent: true }); }
-  catch (e) { console.error('No se pudo comprobar la hoja al arrancar', e); }
+  catch (e) { console.error('No se pudo comprobar la hoja', e); }
+  finally { sheetChecking = false; sheetCheckedAt = Date.now(); }
 }
 
+/*
+ * El orden importa, y es el revés de lo que parece: el catálogo se queda en la cola hasta DESPUÉS
+ * de leer la hoja. Un evento de catálogo reescribe las pestañas de configuración, así que enviarlo
+ * primero borraría de un plumazo el usuario o el producto que alguien acabara de añadir a mano en
+ * el Excel, y la lectura de después ya no vería ninguna diferencia. Los cierres y los movimientos
+ * de inventario sí van primero: solo añaden filas y no pisan nada.
+ *
+ * Al leer la hoja se aplica lo que traiga y se vuelve a poner en la cola un catálogo nuevo (ya
+ * fusionado), que es el que sube en el último envío.
+ */
 async function flushAndCheck() {
+  await syncFlush({ skipCatalog: true });
+  await checkSheet();
   await syncFlush();
-  await checkSheetOnStart();
 }
 
 function init() {
@@ -853,7 +872,7 @@ function init() {
   showView('login');
   flushAndCheck();
   window.addEventListener('online', flushAndCheck);
-  setInterval(() => syncFlush(), 5 * 60 * 1000);
+  setInterval(flushAndCheck, 5 * 60 * 1000);
 }
 
 document.addEventListener('DOMContentLoaded', init);

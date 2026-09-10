@@ -192,12 +192,16 @@ No hace falta entrar en Administración: **cada vez que se abre la app se compru
 distinto se aplica en el momento, sin preguntar, y solo aparece un aviso con lo que ha entrado
 («Actualizado desde la hoja: 1 usuario, 2 productos»). Si todo está igual no se dice nada.
 
-- Antes de leer la hoja se **vacía la cola de envíos**. Es el orden que importa: si un cambio hecho en la tablet
-  estuviera todavía sin subir, leer la hoja primero lo desharía. Por eso, mientras quede algo pendiente de enviar,
-  la comprobación se deja para la próxima vez.
+- **La hoja se lee antes de reescribirla.** Los cierres y los movimientos de inventario pendientes suben primero
+  (solo añaden filas), pero el catálogo espera: un envío de catálogo reescribe las pestañas de configuración, así
+  que mandarlo antes de leer borraría el usuario o el producto que alguien acabara de añadir a mano en el Excel.
+  Después de leer, la tablet devuelve a la hoja el resultado ya fusionado.
 - **No se comprueba con un ticket a medias** ni con la pantalla de cobro abierta: cambiar precios debajo de una
   venta en curso sería peor que esperar.
-- Se hace **una vez por sesión**, al abrir la app, y se reintenta al recuperar la conexión.
+- Se comprueba al abrir la app, **al volver a ella**, al recuperar la conexión y cada pocos minutos, con una espera
+  mínima de dos minutos entre consultas. En una tablet la app casi nunca se cierra de verdad —se queda en segundo
+  plano—, así que «una vez al arrancar» no bastaría: se edita el Excel en el ordenador, se coge la tablet y ya
+  está puesta al día.
 - **Sin cobertura no dice nada** —una tablet sin red es lo normal—, pero un token equivocado o un script sin
   implementar **sí avisan**: si no, lo único que se vería es que «no se actualiza nada».
 - **Las existencias no se tocan** en la comprobación automática: el recuento de la tablet baja con cada venta, así
@@ -216,7 +220,9 @@ resumen antes de aplicar y el que permite traer también las existencias.
 
 - La app guarda cada envío en una cola local (IndexedDB) y lo manda con un `POST` al script cuando hay red.
   Si la tablet está sin conexión, el icono ☁️ de la barra de ventas muestra los pendientes y se reintenta al
-  abrir la app, al recuperar la red, cada 5 minutos o al tocar el icono.
+  abrir la app, al volver a ella, al recuperar la red, cada 5 minutos o al tocar el icono. Los envíos de
+  **catálogo** son una excepción: son una instantánea que reescribe la hoja, así que en el arranque se dejan para
+  después de haberla leído (`syncFlush({ skipCatalog: true })`).
 - El script es **idempotente**: reenviar un cierre o un movimiento ya guardado no duplica filas.
 - «Actualizar desde la hoja» no usa la cola: son consultas directas (`GET …/exec?token=…&accion=…`) y no cambian
   nada en la tablet hasta que se confirma. La comprobación del arranque es la misma función en modo silencioso:
