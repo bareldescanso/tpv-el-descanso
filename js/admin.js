@@ -370,14 +370,14 @@ function renderAdminUsers(body) {
 ACTIONS['admin-pin-reveal'] = (b) => { const shown = b.textContent !== '••••'; b.textContent = shown ? '••••' : b.dataset.pin; };
 ACTIONS['admin-user-new'] = () => userForm(null);
 ACTIONS['admin-user-edit'] = (b) => userForm(userById(b.dataset.id));
-ACTIONS['admin-user-toggle'] = (b) => { const u = userById(b.dataset.id); if (!u) return; u.active = b.checked; saveConfig(); renderAdmin(); };
+ACTIONS['admin-user-toggle'] = (b) => { const u = userById(b.dataset.id); if (!u) return; u.active = b.checked; catalogChanged(); renderAdmin(); };
 ACTIONS['admin-user-del'] = async (b) => {
   const u = userById(b.dataset.id);
   if (!u) return;
   const ok = await confirmDialog({ title: `¿Eliminar a ${u.name}?`, text: 'Los turnos y tickets anteriores conservan su nombre.', ok: 'Eliminar', danger: true });
   if (!ok) return;
   config.users = config.users.filter((x) => x.id !== u.id);
-  saveConfig(); renderAdmin();
+  catalogChanged(); renderAdmin();
 };
 
 function userForm(u) {
@@ -406,7 +406,7 @@ function userForm(u) {
     const fields = { name, pin, active: !!data.active };
     if (isNew) config.users.push({ id: uid('u'), ...fields });
     else Object.assign(u, fields);
-    saveConfig(); closeModal(m); renderAdmin();
+    catalogChanged(); closeModal(m); renderAdmin();
     toast('Usuario guardado', 'success');
   });
 }
