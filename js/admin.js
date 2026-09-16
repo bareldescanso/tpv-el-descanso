@@ -452,7 +452,7 @@ function renderAdminClub(body) {
     config.club.subtitle = data.subtitle.trim();
     config.settings.keepAwake = !!data.keepAwake;
     config.settings.vibrate = !!data.vibrate;
-    saveConfig(); applyBranding();
+    catalogChanged(); applyBranding();
     toast('Ajustes guardados', 'success');
   });
 }
@@ -462,11 +462,11 @@ ACTIONS['change:logo'] = async (input) => {
   if (!file) return;
   try {
     config.club.logo = await imageFileToDataUrl(file, 256);
-    saveConfig(); applyBranding(); renderAdmin();
+    catalogChanged(); applyBranding(); renderAdmin();
     toast('Logo actualizado', 'success');
   } catch (e) { toast('No se pudo leer la imagen', 'error'); }
 };
-ACTIONS['admin-logo-reset'] = () => { config.club.logo = null; saveConfig(); applyBranding(); renderAdmin(); };
+ACTIONS['admin-logo-reset'] = () => { config.club.logo = null; catalogChanged(); applyBranding(); renderAdmin(); };
 
 /* ---------- Google Sheets ---------- */
 
