@@ -742,10 +742,15 @@ async function importHistory(history, cfg) {
  *
  * En automático **no se tocan las existencias**: el recuento de la tablet baja con cada venta, así
  * que es más de fiar que el de la hoja. Siguen siendo la casilla del modo manual.
+ *
+ * Devuelve `true` solo si la hoja se ha leído y entendido (aunque no hubiera nada que cambiar), y
+ * `false` si se ha salido sin llegar a verla. Quien llame lo necesita para saber si puede subir el
+ * catálogo: subirlo reescribe las pestañas de configuración, y hacerlo sin haber leído la hoja
+ * borraría lo que alguien acabara de escribir en el Excel. Ver flushAndCheck en app.js.
  */
 async function sheetImport({ silent = false } = {}) {
-  if (!syncEnabled()) { if (!silent) toast('Activa y guarda primero la conexión', 'warn'); return; }
-  if (ticket.lines.length) { if (!silent) toast('Termina o vacía el ticket en curso antes de actualizar', 'warn', 4500); return; }
+  if (!syncEnabled()) { if (!silent) toast('Activa y guarda primero la conexión', 'warn'); return false; }
+  if (ticket.lines.length) { if (!silent) toast('Termina o vacía el ticket en curso antes de actualizar', 'warn', 4500); return false; }
 
   syncProgress('Descargando la configuración…');
   let payload;
@@ -755,7 +760,7 @@ async function sheetImport({ silent = false } = {}) {
     syncState.lastError = e.message; persistSyncState(); syncProgress('');
     if (!silent) toast(`No se pudo descargar: ${e.message}`, 'error', 7000);
     else if (!e.offline) toast(`No se pudo leer la hoja: ${e.message}`, 'error', 8000);
-    return;
+    return false;
   }
   // Los agregados del histórico son baratos y hacen falta para saber cuántos turnos faltan. Si esta
   // consulta falla no se cancela nada: la configuración es lo urgente y sigue.
@@ -780,11 +785,11 @@ async function sheetImport({ silent = false } = {}) {
     persistSyncState(); renderSyncStatus();
     if (silent) {
       toast(`${syncState.lastError}. No se ha cambiado nada; el detalle está en Administración → Google Sheets.`, 'warn', 8000);
-      return;
+      return false;
     }
     await alertDialog('La hoja tiene datos que hay que corregir',
       `No se ha cambiado nada en esta tablet. Arregla esto en la hoja y vuelve a pulsar «Actualizar desde la hoja»:<br><br>${lista.map((x) => `• ${esc(x)}`).join('<br>')}`);
-    return;
+    return false;
   }
 
   const d = {
@@ -820,7 +825,8 @@ async function sheetImport({ silent = false } = {}) {
 
   let ans;
   if (silent) {
-    if (!cambios && !hayHistorico) return;   // todo igual: ni un aviso
+    // Todo igual: ni un aviso. La hoja sí se ha leído, así que se devuelve `true`.
+    if (!cambios && !hayHistorico) return true;
     ans = { includeStock: false, includeHistory: hayHistorico };
   } else {
     const rowsHTML = [
@@ -838,7 +844,8 @@ async function sheetImport({ silent = false } = {}) {
       // Sin nada que traer, la casilla solo estorbaría.
       history: hayHistorico ? { turnosNuevos: history.faltan.length, movimientosTotal: history.movimientosTotal } : null
     });
-    if (!ans) return;
+    // Cancelar es «no toques nada», y eso incluye la hoja: `false` para que no suba el catálogo.
+    if (!ans) return false;
   }
 
   // En automático, si la configuración está igual no se reescribe: así una apertura de la app que
@@ -909,6 +916,7 @@ async function sheetImport({ silent = false } = {}) {
   // Se devuelve el resultado a la hoja para que recoja lo que la app haya resuelto por su cuenta
   // (ids nuevos de las filas sin ID y las existencias ya fusionadas).
   if (aplicada) { await syncEnqueueCatalog(); syncFlush(); }
+  return true;
 }
 
 ACTIONS['cloud-fetch-config'] = () => sheetImport();

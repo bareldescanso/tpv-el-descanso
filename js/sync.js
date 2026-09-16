@@ -270,9 +270,15 @@ function soldUnitsInOpenTurn() {
  *    hoja exactamente en esas unidades y sin la resta se perderían.
  * No se recorta a 0 a propósito: un stock negativo significa que se ha vendido más de lo contado,
  * y stockLevel ya lo pinta como agotado.
+ *
+ * Un producto que esta tablet no tenía (`prev` vacío) es la excepción, y es importante: no hay
+ * existencias propias que conservar, así que se cogen las de la hoja aunque la casilla esté sin
+ * marcar. Si se dejaran a null, el catálogo que se devuelve al terminar la importación las
+ * escribiría en blanco y BORRARÍA de la hoja el stock, el mínimo y la marca de «Controla stock».
+ * En una tablet recién dada de alta eso vaciaba esas tres columnas del catálogo entero.
  */
 function stockFromSheet(p, prev, { includeStock, soldUnits }) {
-  if (!includeStock) return { stock: prev ? (prev.stock ?? null) : null, minStock: prev ? (prev.minStock ?? null) : null };
+  if (!includeStock && prev) return { stock: prev.stock ?? null, minStock: prev.minStock ?? null };
   const minStock = p.minimo == null ? null : p.minimo;
   if (p.stock == null) return { stock: null, minStock };
   return { stock: p.stock - (soldUnits[p.id] || 0), minStock };

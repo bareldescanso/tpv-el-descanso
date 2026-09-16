@@ -1,7 +1,7 @@
 /* TPV El Descanso — lógica principal: pantallas, ticket, cobro, cierre e histórico. */
 'use strict';
 
-const APP_VERSION = '1.5.1';
+const APP_VERSION = '1.5.2';
 const DENOMS = [50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50, 20, 10, 5, 2, 1];
 
 /* ---------- Estado ---------- */
@@ -832,14 +832,19 @@ let sheetChecking = false;
  * Comprobación de la hoja: si el Excel trae algo distinto se aplica sin preguntar (ver sheetImport
  * en admin.js). No se hace con un ticket a medias: cambiar precios debajo de una venta en curso
  * sería peor que esperar. Sin conexión tampoco se intenta; se reintenta al recuperar la red.
+ *
+ * Devuelve si la hoja se ha leído de verdad. Todas las salidas de arriba son «no se ha leído»: son
+ * silenciosas y frecuentes (una tablet sin cobertura, un ticket a medias, dos comprobaciones
+ * seguidas), y quien llama tiene que poder distinguirlas de una lectura buena antes de reescribir
+ * la hoja.
  */
 async function checkSheet() {
-  if (sheetChecking || !syncEnabled() || !navigator.onLine) return;
-  if (ticket.lines.length) return;
-  if (Date.now() - sheetCheckedAt < SHEET_CHECK_EVERY) return;
+  if (sheetChecking || !syncEnabled() || !navigator.onLine) return false;
+  if (ticket.lines.length) return false;
+  if (Date.now() - sheetCheckedAt < SHEET_CHECK_EVERY) return false;
   sheetChecking = true;
-  try { await sheetImport({ silent: true }); }
-  catch (e) { console.error('No se pudo comprobar la hoja', e); }
+  try { return (await sheetImport({ silent: true })) === true; }
+  catch (e) { console.error('No se pudo comprobar la hoja', e); return false; }
   finally { sheetChecking = false; sheetCheckedAt = Date.now(); }
 }
 
@@ -852,6 +857,16 @@ async function checkSheet() {
  *
  * Al leer la hoja se aplica lo que traiga y se vuelve a poner en la cola un catálogo nuevo (ya
  * fusionado), que es el que sube en el último envío.
+ *
+ * Y por eso ese último envío va CONDICIONADO a que la lectura haya salido bien. Antes se hacía
+ * siempre, y bastaba con que la hoja no se llegara a leer —sin cobertura, con un ticket a medias, o
+ * con una sola errata en el Excel que hiciera fallar la validación— para que el catálogo pendiente
+ * subiera igual y reescribiera las pestañas de configuración con lo que tuviera la tablet. Quien
+ * acabara de editar el Excel veía desaparecer su trabajo justo después de guardarlo.
+ *
+ * Si la lectura no sale bien el catálogo se queda en la cola (el ☁️ lo marca como pendiente) y sube
+ * en la siguiente vuelta que sí lea. Los cierres y los movimientos no esperan a nada: ya han subido
+ * en el primer envío.
  */
 /*
  * La primera vez en cada arranque —y justo después de un alta con enlace— es cuando la app está
@@ -869,9 +884,11 @@ async function flushAndCheck() {
     if (syncState.pending) loaderStep('Enviando lo que quedaba pendiente…');
     await syncFlush({ skipCatalog: true });
     loaderStep('Comprobando la hoja del club…');
-    await checkSheet();
-    loaderStep('Devolviendo la configuración a la hoja…');
-    await syncFlush();
+    const leida = await checkSheet();
+    if (leida) {
+      loaderStep('Devolviendo la configuración a la hoja…');
+      await syncFlush();
+    }
   } finally {
     if (conCortina) hideLoader();
   }

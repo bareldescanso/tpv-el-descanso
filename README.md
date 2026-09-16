@@ -242,7 +242,9 @@ distinto se aplica en el momento, sin preguntar, y solo aparece un aviso con lo 
 - **La hoja se lee antes de reescribirla.** Los cierres y los movimientos de inventario pendientes suben primero
   (solo añaden filas), pero el catálogo espera: un envío de catálogo reescribe las pestañas de configuración, así
   que mandarlo antes de leer borraría el usuario o el producto que alguien acabara de añadir a mano en el Excel.
-  Después de leer, la tablet devuelve a la hoja el resultado ya fusionado.
+  Después de leer, la tablet devuelve a la hoja el resultado ya fusionado. **Si la lectura no sale bien** —sin
+  cobertura, con un ticket a medias o con una errata en el Excel que no pase la validación— el catálogo no sube:
+  se queda en la cola (el ☁️ lo marca como pendiente) y espera a la siguiente vuelta que sí consiga leer.
 - **No se comprueba con un ticket a medias** ni con la pantalla de cobro abierta: cambiar precios debajo de una
   venta en curso sería peor que esperar.
 - Se comprueba al abrir la app, **al volver a ella**, al recuperar la conexión y cada pocos minutos, con una espera
@@ -279,7 +281,8 @@ resumen antes de aplicar y el que permite traer también las existencias.
   Si la tablet está sin conexión, el icono ☁️ de la barra de ventas muestra los pendientes y se reintenta al
   abrir la app, al volver a ella, al recuperar la red, cada 5 minutos o al tocar el icono. Los envíos de
   **catálogo** son una excepción: son una instantánea que reescribe la hoja, así que en el arranque se dejan para
-  después de haberla leído (`syncFlush({ skipCatalog: true })`).
+  después de haberla leído (`syncFlush({ skipCatalog: true })`) y solo se mandan si `checkSheet()` confirma que la
+  ha leído.
 - El script es **idempotente**: reenviar un cierre o un movimiento ya guardado no duplica filas.
 - «Actualizar desde la hoja» no usa la cola: son consultas directas (`GET …/exec?token=…&accion=…`) y no cambian
   nada en la tablet hasta que se confirma. La comprobación del arranque es la misma función en modo silencioso:
