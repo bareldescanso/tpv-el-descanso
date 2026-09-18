@@ -435,7 +435,7 @@ function renderAdminClub(body) {
         </div>
         <div class="logo-box">
           <label>Logo</label>
-          <img class="logo-preview" src="${esc(config.club.logo || 'icons/logo.svg')}" alt="Logo">
+          <img class="logo-preview" src="${esc(config.club.logo || 'icons/logo.png')}" alt="Logo">
           <label class="btn file-btn">📷 Cambiar logo<input type="file" accept="image/*" data-change="logo" hidden></label>
           ${config.club.logo ? '<button type="button" class="btn btn-ghost" data-action="admin-logo-reset">Volver al logo por defecto</button>' : ''}
           <p class="muted small">Se recomienda una imagen cuadrada. Se guarda reducida a 256 px.</p>
