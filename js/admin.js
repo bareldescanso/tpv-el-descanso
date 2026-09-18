@@ -433,6 +433,8 @@ function renderAdminClub(body) {
           <div class="field"><label>Subtítulo <span class="muted">(opcional)</span></label><input name="subtitle" maxlength="60" value="${esc(config.club.subtitle || '')}" placeholder="Bar del club"></div>
           <label class="check"><input type="checkbox" name="keepAwake" ${config.settings.keepAwake ? 'checked' : ''}> Mantener la pantalla encendida mientras hay alguien identificado</label>
           <label class="check"><input type="checkbox" name="vibrate" ${config.settings.vibrate ? 'checked' : ''}> Vibración al pulsar botones</label>
+          <label class="check"><input type="checkbox" name="compactView" ${config.settings.compactView ? 'checked' : ''}> Vista compacta (botones y pestañas más pequeños, útil en pantallas de móvil)</label>
+          <p class="muted small">Este ajuste es solo de este dispositivo: no se comparte con la hoja ni con otras tablets.</p>
         </div>
         <div class="logo-box">
           <label>Logo</label>
@@ -453,6 +455,7 @@ function renderAdminClub(body) {
     config.club.subtitle = data.subtitle.trim();
     config.settings.keepAwake = !!data.keepAwake;
     config.settings.vibrate = !!data.vibrate;
+    config.settings.compactView = !!data.compactView;
     catalogChanged(); applyBranding();
     toast('Ajustes guardados', 'success');
   });

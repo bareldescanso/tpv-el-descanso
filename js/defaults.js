@@ -16,7 +16,8 @@ const DEFAULT_CONFIG = {
   "adminPin": "1234",
   "settings": {
     "keepAwake": true,
-    "vibrate": true
+    "vibrate": true,
+    "compactView": false
   },
   "sync": {
     "enabled": false,
