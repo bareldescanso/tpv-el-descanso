@@ -1,7 +1,7 @@
 /* TPV El Descanso — lógica principal: pantallas, ticket, cobro, cierre e histórico. */
 'use strict';
 
-const APP_VERSION = '1.5.5';
+const APP_VERSION = '1.5.6';
 const DENOMS = [50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50, 20, 10, 5, 2, 1];
 
 /* ---------- Estado ---------- */
@@ -827,6 +827,19 @@ window.addEventListener('beforeunload', (e) => {
 const SHEET_CHECK_EVERY = 2 * 60 * 1000;
 let sheetCheckedAt = 0;
 let sheetChecking = false;
+
+/*
+ * Cuándo se leyó la hoja por última vez CON ÉXITO de verdad (a diferencia de sheetCheckedAt, que
+ * marca cada intento, salga bien o no). catalogChanged() sube el catálogo local sin comprobar antes
+ * la hoja -si esperara a leerla perdería la propia edición recién hecha-, así que es la única señal
+ * que tiene Administración para avisar de que ese envío podría ir con datos desfasados: un
+ * dispositivo con un ticket a medias, sin red, o simplemente olvidado varios días, puede llevar todo
+ * ese tiempo sin una lectura buena.
+ */
+let lastSheetOkAt = 0;
+const SHEET_STALE_AFTER = 15 * 60 * 1000;
+function markSheetOk() { lastSheetOkAt = Date.now(); }
+function sheetIsStale() { return syncEnabled() && Date.now() - lastSheetOkAt > SHEET_STALE_AFTER; }
 
 /*
  * Comprobación de la hoja: si el Excel trae algo distinto se aplica sin preguntar (ver sheetImport

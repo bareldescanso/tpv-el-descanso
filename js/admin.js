@@ -21,6 +21,7 @@ function renderAdmin() {
   $('#admin-nav').innerHTML = Object.entries(ADMIN_TABS).map(([k, t]) => `
     <button class="admin-nav-btn ${k === adminTab ? 'active' : ''}" data-action="admin-tab" data-tab="${k}"><span>${t.icon}</span>${t.label}</button>`).join('');
   $('#admin-warning').classList.toggle('hidden', config.adminPin !== '1234');
+  $('#admin-stale-warning').classList.toggle('hidden', !sheetIsStale());
   const body = $('#admin-body');
   body.scrollTop = 0;
   ({
@@ -826,7 +827,7 @@ async function sheetImport({ silent = false } = {}) {
   let ans;
   if (silent) {
     // Todo igual: ni un aviso. La hoja sí se ha leído, así que se devuelve `true`.
-    if (!cambios && !hayHistorico) return true;
+    if (!cambios && !hayHistorico) { markSheetOk(); return true; }
     ans = { includeStock: false, includeHistory: hayHistorico };
   } else {
     const rowsHTML = [
@@ -916,10 +917,11 @@ async function sheetImport({ silent = false } = {}) {
   // Se devuelve el resultado a la hoja para que recoja lo que la app haya resuelto por su cuenta
   // (ids nuevos de las filas sin ID y las existencias ya fusionadas).
   if (aplicada) { await syncEnqueueCatalog(); syncFlush(); }
+  markSheetOk();
   return true;
 }
 
-ACTIONS['cloud-fetch-config'] = () => sheetImport();
+ACTIONS['cloud-fetch-config'] = async () => { await sheetImport(); renderAdmin(); };
 
 ACTIONS['cloud-send-history'] = async () => {
   if (!syncEnabled()) { toast('Activa y guarda primero la conexión', 'warn'); return; }
